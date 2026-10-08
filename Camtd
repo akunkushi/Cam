@@ -1,4 +1,4 @@
--- Macro TD v33 - Deep Argument Rebuilder for Upgrade/Sell & Precise Cost Waiter
+-- Macro TD v34 - Auto-Retry & Persistent Cash Waiter
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -30,24 +30,33 @@ local elevatorOptions = {
 }
 local currentElevatorIndex = 1
 
+local lastValidCash = 200
 local function getPlayerCash()
     local success, cash = pcall(function()
         if LocalPlayer:FindFirstChild("leaderstats") then
-            local c = LocalPlayer.leaderstats:FindFirstChild("Cash") or LocalPlayer.leaderstats:FindFirstChild("Money") or LocalPlayer.leaderstats:FindFirstChild("Coins")
-            if c then return c.Value end
+            for _, stat in ipairs(LocalPlayer.leaderstats:GetChildren()) do
+                if stat:IsA("ValueBase") and typeof(stat.Value) == "number" then
+                    lastValidCash = stat.Value
+                    return stat.Value
+                end
+            end
         end
         local pg = LocalPlayer:FindFirstChild("PlayerGui")
         if pg then
             for _, gui in ipairs(pg:GetDescendants()) do
-                if (gui.Name:lower() == "cash" or gui.Name:lower() == "money" or gui.Name:lower() == "coins") and gui:IsA("TextLabel") then
-                    local num = tonumber(gui.Text:gsub("[^%d]", ""))
-                    if num then return num end
+                if gui:IsA("TextLabel") then
+                    local text = gui.Text
+                    local num = tonumber(text:gsub("[^%d]", ""))
+                    if num and num > 0 and num < 10000000 and (gui.Name:lower():find("cash") or gui.Name:lower():find("money") or gui.Name:lower():find("coin") or text:find("$")) then
+                        lastValidCash = num
+                        return num
+                    end
                 end
             end
         end
-        return 999999
+        return lastValidCash
     end)
-    return success and cash or 999999
+    return success and cash or lastValidCash
 end
 
 local function teleportToElevator(elevatorCode)
@@ -118,12 +127,12 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v33") then
-    guiParent.MacroGameplayGUI_v33:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v34") then
+    guiParent.MacroGameplayGUI_v34:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v33"
+screenGui.Name = "MacroGameplayGUI_v34"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
@@ -144,7 +153,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v33 (Deep Argument Fix)"
+title.Text = "Macro TD v34 (Auto-Retry Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -436,7 +445,7 @@ function loadMacroFromFile(mName)
         
         for idxStr, tInfo in pairs(data.Towers) do
             local idx = tonumber(idxStr)
-            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and deserializeVal(tInfo.PositionCF) or nil, IDs = tInfo.IDs or {} }
+            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil, IDs = tInfo.IDs or {} }
         end
         return true
     end)
@@ -544,7 +553,6 @@ local function resolveTargetIndexByPlayerProximity()
     return bestIdx
 end
 
--- Deep Argument Rebuilder untuk Playback Upgrade/Sell
 local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     if not newModel then return oldArgs end
     local newPrimaryID = getPrimaryID(newModel)
@@ -593,7 +601,7 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     return processTable(oldArgs)
 end
 
--- Hook Remote dengan Rekaman Data ID Tower Terkait
+-- Hook Remote
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -635,7 +643,6 @@ if not getgenv().MacroHookedTD then
                             })
                             logConsole(string.format("[Rec] TowerAdd #%d (Cost: %d)", currentIdx, cost))
                             
-                            -- Ambil ID model tower yang baru di-place
                             task.spawn(function()
                                 task.wait(0.3)
                                 local model = findTowerNearPosition(cf)
@@ -696,7 +703,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Deep Rebuilder Active)...")
+    logConsole("PLAYBACK STARTED (Auto-Retry Waiter Active)...")
     
     task.spawn(function()
         local playbackStart = tick()
@@ -711,76 +718,91 @@ function startPlayback()
             pcall(function()
                 local remoteObj = action.Remote or ReplicatedStorage:FindFirstChild(action.RemoteName, true)
                 local realArgs = deserializeVal(action.Args)
-                
-                -- Penunggu Cash Presisi Tanpa Batas Waktu
-                if action.Type == "ADD" or action.Type == "UPGRADE" then
-                    local requiredCost = action.CashCost or 100
-                    while isPlaying and getPlayerCash() < requiredCost do
-                        logConsole(string.format("[%d/%d] Menunggu Cash %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
-                        task.wait(1)
-                    end
-                end
-
-                if not isPlaying then return end
+                local requiredCost = action.CashCost or 100
 
                 if action.Type == "ADD" then
-                    local beforeSnapshot = {}
-                    for _, v in ipairs(Workspace:GetDescendants()) do
-                        if v:IsA("Model") then beforeSnapshot[v] = true end
-                    end
-                    
-                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
-                    else remoteObj:FireServer(unpack(realArgs)) end
-                    
+                    -- AUTO-RETRY PLACE: Terus tunggu cash dan ulang remote sampai tower sukses ter-spawn
                     local newlySpawnedModel = nil
-                    local timer = 0
                     repeat
-                        task.wait(0.1)
-                        timer = timer + 0.1
+                        while isPlaying and getPlayerCash() < requiredCost do
+                            logConsole(string.format("[%d/%d] Menunggu Cash Place (Butuh: %d | Cash: %d)...", index, #recordedData, requiredCost, getPlayerCash()))
+                            task.wait(1)
+                        end
+                        if not isPlaying then return end
+
+                        local beforeSnapshot = {}
                         for _, v in ipairs(Workspace:GetDescendants()) do
-                            if v:IsA("Model") and not beforeSnapshot[v] and v ~= LocalPlayer.Character then
-                                if getRootFromModel(v) then
-                                    newlySpawnedModel = v; break
+                            if v:IsA("Model") then beforeSnapshot[v] = true end
+                        end
+                        
+                        if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
+                        else remoteObj:FireServer(unpack(realArgs)) end
+                        
+                        local timer = 0
+                        repeat
+                            task.wait(0.1)
+                            timer = timer + 0.1
+                            for _, v in ipairs(Workspace:GetDescendants()) do
+                                if v:IsA("Model") and not beforeSnapshot[v] and v ~= LocalPlayer.Character then
+                                    if getRootFromModel(v) then
+                                        newlySpawnedModel = v; break
+                                    end
                                 end
                             end
+                        until newlySpawnedModel or timer >= 3.0
+                        
+                        if not newlySpawnedModel and action.PositionCF then
+                            local excludeInstances = {}
+                            for _, t in pairs(sessionTowers) do excludeInstances[t] = true end
+                            newlySpawnedModel = findTowerNearPosition(action.PositionCF, excludeInstances)
                         end
-                    until newlySpawnedModel or timer >= 4.0
-                    
-                    if not newlySpawnedModel and action.PositionCF then
-                        local excludeInstances = {}
-                        for _, t in pairs(sessionTowers) do excludeInstances[t] = true end
-                        newlySpawnedModel = findTowerNearPosition(action.PositionCF, excludeInstances)
-                    end
-                    
+                        
+                        if not newlySpawnedModel then
+                            logConsole(string.format("[%d/%d] PLACE Tower #%d Gagal/Kurang Cash, Mencoba Lagi...", index, #recordedData, action.TowerIndex))
+                            task.wait(1)
+                        end
+                    until newlySpawnedModel or not isPlaying
+
                     if newlySpawnedModel then
                         sessionTowers[action.TowerIndex] = newlySpawnedModel
                         logConsole(string.format("[%d/%d] PLACE Tower #%d OK", index, #recordedData, action.TowerIndex))
-                    else
-                        logConsole(string.format("[%d/%d] PLACE Tower #%d FAIL", index, #recordedData, action.TowerIndex))
                     end
+
                 elseif action.Type == "UPGRADE" or action.Type == "SELL" then
                     local targetIdx = action.TargetIndex or 1
-                    local currentModel = sessionTowers[targetIdx]
                     
-                    if not currentModel and recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
-                        local excludeInstances = {}
-                        for k, t in pairs(sessionTowers) do 
-                            if k ~= targetIdx then excludeInstances[t] = true end 
+                    -- AUTO-RETRY UPGRADE/SELL: Terus tunggu cash dan model siap, lalu ulangi sampai sukses
+                    local successAction = false
+                    repeat
+                        while isPlaying and getPlayerCash() < requiredCost do
+                            logConsole(string.format("[%d/%d] Menunggu Cash %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
+                            task.wait(1)
                         end
-                        currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF, excludeInstances)
-                    end
-                    
-                    if currentModel then
-                        task.wait(0.3)
-                        -- Menggunakan Deep Argument Rebuilder agar data/ID remote sesuai dengan model baru
-                        local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
+                        if not isPlaying then return end
+
+                        local currentModel = sessionTowers[targetIdx]
+                        if not currentModel and recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
+                            local excludeInstances = {}
+                            for k, t in pairs(sessionTowers) do 
+                                if k ~= targetIdx then excludeInstances[t] = true end 
+                            end
+                            currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF, excludeInstances)
+                        end
                         
-                        if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
-                        else remoteObj:FireServer(unpack(playArgs)) end
-                        logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
-                    else
-                        logConsole(string.format("[%d/%d] %s Tower #%d FAIL", index, #recordedData, action.Type, targetIdx))
-                    end
+                        if currentModel then
+                            task.wait(0.2)
+                            local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
+                            
+                            if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
+                            else remoteObj:FireServer(unpack(playArgs)) end
+                            
+                            successAction = true
+                            logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
+                        else
+                            logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
+                            task.wait(1)
+                        end
+                    until successAction or not isPlaying
                 end
             end)
         end
