@@ -1,4 +1,4 @@
--- Macro TD v18 - Save/Load, Auto Play, Auto Elevator + Character Teleport & Minimize UI
+-- Macro TD v18 - Save/Load, Auto Play, Auto Elevator + Character Teleport & Auto Minimize
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -37,7 +37,6 @@ local function teleportToElevator(elevatorCode)
     local root = char:FindFirstChild("HumanoidRootPart")
     if not root then return end
 
-    -- Mencari model elevator di Workspace berdasarkan nama kodenya
     local targetElevator = nil
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj.Name == elevatorCode then
@@ -48,7 +47,7 @@ local function teleportToElevator(elevatorCode)
 
     if targetElevator then
         local cf = targetElevator:GetPivot()
-        root.CFrame = cf + Vector3.new(0, 3, 0) -- Teleport tepat di tengah elevator
+        root.CFrame = cf + Vector3.new(0, 3, 0)
     end
 end
 
@@ -112,7 +111,7 @@ screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 360, 0, 450)
+mainFrame.Size = UDim2.new(0, 360, 0, 35) -- Default ukuran awal (minimized)
 mainFrame.Position = UDim2.new(0.5, -180, 0.2, -100)
 mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
 mainFrame.BorderSizePixel = 0
@@ -139,7 +138,7 @@ local minimizeBtn = Instance.new("TextButton")
 minimizeBtn.Size = UDim2.new(0, 25, 0, 25)
 minimizeBtn.Position = UDim2.new(1, -30, 0, 5)
 minimizeBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-minimizeBtn.Text = "-"
+minimizeBtn.Text = "+" -- Simbol '+' karena status awal minimized
 minimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 minimizeBtn.Font = Enum.Font.SourceSansBold
 minimizeBtn.TextSize = 14
@@ -149,6 +148,7 @@ local contentFrame = Instance.new("Frame")
 contentFrame.Size = UDim2.new(1, 0, 1, -35)
 contentFrame.Position = UDim2.new(0, 0, 0, 35)
 contentFrame.BackgroundTransparency = 1
+contentFrame.Visible = false -- Sembunyikan konten awal
 contentFrame.Parent = mainFrame
 
 local recordBtn = Instance.new("TextButton")
@@ -265,8 +265,8 @@ local function logConsole(msg)
     logFrame.CanvasPosition = Vector2.new(0, logFrame.CanvasSize.Y.Offset)
 end
 
--- Minimize Feature
-local isMinimized = false
+-- Minimize Feature Logic
+local isMinimized = true -- Set status default minimized ke true
 minimizeBtn.MouseButton1Click:Connect(function()
     isMinimized = not isMinimized
     if isMinimized then
@@ -296,10 +296,8 @@ task.spawn(function()
         task.wait(2)
         if autoElevator then
             pcall(function()
-                -- 1. Pindahkan posisi fisik avatar ke dalam elevator
                 teleportToElevator(selectedElevator)
                 
-                -- 2. Panggil Remote Elevator
                 local Remote = ReplicatedStorage:FindFirstChild("ModuleLoader")
                 if Remote then
                     local Event = Remote.Shared.Network.RemoteFunction.ElevatorEnter
