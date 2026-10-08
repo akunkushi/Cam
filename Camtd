@@ -1,4 +1,4 @@
--- Macro TD v29 - Strict Coordinate & Distance-Based Target Resolution
+-- Macro TD v30 - Proximity Target Locking & Cash Guard
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -118,12 +118,12 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v29") then
-    guiParent.MacroGameplayGUI_v29:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v30") then
+    guiParent.MacroGameplayGUI_v30:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v29"
+screenGui.Name = "MacroGameplayGUI_v30"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
@@ -144,7 +144,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v29 (Strict Coordinate Match)"
+title.Text = "Macro TD v30 (Proximity Target Lock)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -433,7 +433,7 @@ function loadMacroFromFile(mName)
         
         for idxStr, tInfo in pairs(data.Towers) do
             local idx = tonumber(idxStr)
-            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil }
+            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and deserializeVal(tInfo.PositionCF) or nil }
         end
         return true
     end)
@@ -476,17 +476,6 @@ local function getCFrameFromArgs(args)
     return nil
 end
 
-local function getInstanceFromArgs(args)
-    for _, v in pairs(args) do
-        if typeof(v) == "Instance" then return v end
-        if type(v) == "table" then
-            local inst = getInstanceFromArgs(v)
-            if inst then return inst end
-        end
-    end
-    return nil
-end
-
 local function findTowerNearPosition(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
@@ -509,41 +498,28 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
--- PENYELESAIAN TARGET BERDASARKAN TITIK KOORDINAT JARAK TERDEKAT (STRICT COORDINATE MATCHING)
-local function resolveTargetIndexByStrictCoordinates(args)
-    local targetPos = nil
+-- FUNGSI PENGUNCI TARGET BERDASARKAN POSISI PLAYER SAAT KLIK UPGRADE
+local function resolveTargetIndexByPlayerProximity()
+    local char = LocalPlayer.Character
+    if not char then return 1 end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return 1 end
     
-    -- 1. Cek apakah argumen langsung membawa CFrame atau Vector3
-    local cf = getCFrameFromArgs(args)
-    if cf then targetPos = cf.Position end
+    local playerPos = root.Position
+    local minDist = 999999
+    local bestIdx = 1
     
-    -- 2. Jika tidak ada, cari Instance model di dalam argumen lalu ambil posisi posisinya di Workspace
-    if not targetPos then
-        local inst = getInstanceFromArgs(args)
-        if inst then
-            local model = inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model")
-            local root = getRootFromModel(model or inst)
-            if root then targetPos = root.Position end
-        end
-    end
-    
-    -- 3. Bandingkan titik koordinat tersebut dengan titik koordinat setiap tower yang sudah direkam
-    if targetPos then
-        local minDist = 999999
-        local bestIdx = 1
-        for idx, tInfo in pairs(recordedTowers) do
-            if tInfo.PositionCF then
-                local dist = (tInfo.PositionCF.Position - targetPos).Magnitude
-                if dist < minDist then
-                    minDist = dist
-                    bestIdx = idx
-                end
+    for idx, tInfo in pairs(recordedTowers) do
+        if tInfo.PositionCF then
+            local dist = (tInfo.PositionCF.Position - playerPos).Magnitude
+            if dist < minDist then
+                minDist = dist
+                bestIdx = idx
             end
         end
-        return bestIdx
     end
     
-    return 1
+    return bestIdx
 end
 
 -- Hook Remote
@@ -565,10 +541,11 @@ if not getgenv().MacroHookedTD then
                             local currentIdx = towerCounter
                             local cf = getCFrameFromArgs(args)
                             
-                            -- Ambil posisi model langsung dari workspace jika CFrame argumen kosong
                             if not cf then
                                 task.wait(0.1)
-                                local model = findTowerNearPosition(LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character.HumanoidRootPart.Position or Vector3.new(0,0,0))
+                                local char = LocalPlayer.Character
+                                local root = char and char:FindFirstChild("HumanoidRootPart")
+                                local model = findTowerNearPosition(root and root.Position or Vector3.new(0,0,0))
                                 if model then cf = model:GetPivot() end
                             end
                             
@@ -577,15 +554,16 @@ if not getgenv().MacroHookedTD then
                                 Type = "ADD", Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf
                             })
-                            logConsole(string.format("[Rec] TowerAdd #%d di Koordinat Disimpan", currentIdx))
+                            logConsole(string.format("[Rec] TowerAdd #%d Disimpan", currentIdx))
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
-                            local targetIdx = resolveTargetIndexByStrictCoordinates(args)
+                            -- Kunci target berdasarkan posisi player berdiri saat meng-upgrade tower tersebut
+                            local targetIdx = resolveTargetIndexByPlayerProximity()
                             table.insert(recordedData, {
                                 Type = (rName == "TowerUpgrade" and "UPGRADE" or "SELL"),
                                 Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TargetIndex = targetIdx
                             })
-                            logConsole(string.format("[Rec] %s -> Tower #%d (Strict Coords)", rName, targetIdx))
+                            logConsole(string.format("[Rec] %s -> Tower #%d (Locked by Proximity)", rName, targetIdx))
                         end
                     end)
                 end)
@@ -605,7 +583,7 @@ recordBtn.MouseButton1Click:Connect(function()
         recordStartTime = tick()
         recordBtn.Text = "Record: ON"
         recordBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        logConsole("RECORDING STARTED (Strict Coordinate Mode)...")
+        logConsole("RECORDING STARTED...")
     else
         recordBtn.Text = "Record: OFF"
         recordBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
