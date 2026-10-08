@@ -1,4 +1,4 @@
--- Macro TD v26 - Sequence Target Fix (Absolute Order Index)
+-- Macro TD v27 - Instant Model Capture & Accurate Target Index Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -118,18 +118,18 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v26") then
-    guiParent.MacroGameplayGUI_v26:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v27") then
+    guiParent.MacroGameplayGUI_v27:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v26"
+screenGui.Name = "MacroGameplayGUI_v27"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Size = UDim2.new(0, 360, 0, 35)
-mainFrame.Position = UDim2.new(0, 20, 0.2, -100)
+mainFrame.Position = UDim2.new(0, 20, 0.2, -100) -- Posisi Kiri
 mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
 mainFrame.BorderSizePixel = 0
 mainFrame.Active = true
@@ -144,7 +144,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v26 (Sequence Target Fix)"
+title.Text = "Macro TD v27 (Instant Model Match)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -433,7 +433,7 @@ function loadMacroFromFile(mName)
         
         for idxStr, tInfo in pairs(data.Towers) do
             local idx = tonumber(idxStr)
-            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and deserializeVal(tInfo.PositionCF) or nil }
+            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil }
         end
         return true
     end)
@@ -491,7 +491,7 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
     if typeof(targetPos) == "CFrame" then targetPos = targetPos.Position end
-    local closest, closestDist = nil, 7
+    local closest, closestDist = nil, 6
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj ~= LocalPlayer.Character then
             if not excludeInstances[obj] then
@@ -509,15 +509,25 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
--- LOGIKA SEQUENCE INDEX: Mencari tower terdekat berdasarkan urutan penempatan fisik di map
-local function resolveTargetIndexByPosition(args)
-    local cf = getCFrameFromArgs(args)
+-- PENCARIAN TARGET AKURAT BERDASARKAN INSTANCE MODEL LANGSUNG
+local function resolveTargetIndex(args)
     local inst = getInstanceFromArgs(args)
-    local targetPos = nil
+    if inst then
+        local model = inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model")
+        if model then
+            for idx, tInfo in pairs(recordedTowers) do
+                if tInfo.Instance == model then
+                    return idx
+                end
+            end
+        end
+    end
     
-    if cf then targetPos = cf.Position
-    elseif inst then
-        local root = getRootFromModel(inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model") or inst)
+    -- Fallback ke posisi terdekat jika instance tidak langsung cocok
+    local cf = getCFrameFromArgs(args)
+    local targetPos = cf and cf.Position or nil
+    if not targetPos and inst then
+        local root = getRootFromModel(inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model"))
         if root then targetPos = root.Position end
     end
     
@@ -565,27 +575,23 @@ if not getgenv().MacroHookedTD then
                             })
                             logConsole(string.format("[Rec] TowerAdd #%d", currentIdx))
                             
+                            -- PENCARIAN MODEL INSTANT (0.1 detik agar langsung terikat ke recordedTowers)
                             task.spawn(function()
-                                local timer = 0
-                                local model = nil
-                                while timer < 5 do
-                                    task.wait(0.2)
-                                    timer = timer + 0.2
-                                    local excludeInstances = {}
-                                    for k, t in pairs(recordedTowers) do
-                                        if k ~= currentIdx and t.Instance then
-                                            excludeInstances[t.Instance] = true
-                                        end
+                                task.wait(0.1)
+                                local excludeInstances = {}
+                                for k, t in pairs(recordedTowers) do
+                                    if k ~= currentIdx and t.Instance then
+                                        excludeInstances[t.Instance] = true
                                     end
-                                    model = findTowerNearPosition(cf, excludeInstances)
-                                    if model then break end
                                 end
+                                local model = findTowerNearPosition(cf, excludeInstances)
                                 if model and recordedTowers[currentIdx] then
                                     recordedTowers[currentIdx].Instance = model
+                                    logConsole(string.format("[Rec] Bind Model ke Tower #%d Sukses", currentIdx))
                                 end
                             end)
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
-                            local targetIdx = resolveTargetIndexByPosition(args)
+                            local targetIdx = resolveTargetIndex(args)
                             table.insert(recordedData, {
                                 Type = (rName == "TowerUpgrade" and "UPGRADE" or "SELL"),
                                 Time = timeStamp, Remote = self, Method = method,
@@ -702,7 +708,6 @@ function startPlayback()
                     
                     if currentModel then
                         task.wait(0.4)
-                        -- Mengarahkan ulang argumen posisi/target ke model sesi yang sesuai
                         local targetRoot = getRootFromModel(currentModel)
                         if targetRoot then
                             for k, v in pairs(realArgs) do
@@ -710,6 +715,8 @@ function startPlayback()
                                     realArgs[k] = targetRoot.CFrame
                                 elseif typeof(v) == "Vector3" then
                                     realArgs[k] = targetRoot.Position
+                                elseif typeof(v) == "Instance" and v:IsA("Model") then
+                                    realArgs[k] = currentModel
                                 end
                             end
                         end
