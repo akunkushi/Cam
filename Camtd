@@ -1,4 +1,4 @@
--- Macro TD - Smart Cash Filter & Wait Guard
+-- Macro TD - Fixed Recording & Smart Cash Guard
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -31,14 +31,13 @@ local elevatorOptions = {
 }
 local currentElevatorIndex = 1
 
--- Helper Mendapatkan Cash Player (Mencari di Leaderstats / PlayerGui)
+-- Helper Mendapatkan Cash Player
 local function getPlayerCash()
     local success, cash = pcall(function()
         if LocalPlayer:FindFirstChild("leaderstats") then
             local c = LocalPlayer.leaderstats:FindFirstChild("Cash") or LocalPlayer.leaderstats:FindFirstChild("Money") or LocalPlayer.leaderstats:FindFirstChild("Coins")
             if c then return c.Value end
         end
-        -- Cek melalui PlayerGui jika menggunakan sistem UI lokal
         local pg = LocalPlayer:FindFirstChild("PlayerGui")
         if pg then
             for _, gui in ipairs(pg:GetDescendants()) do
@@ -48,7 +47,7 @@ local function getPlayerCash()
                 end
             end
         end
-        return 999999 -- Default aman jika tidak ditemukan agar makro tidak stuck selamanya
+        return 999999
     end)
     return success and cash or 999999
 end
@@ -124,12 +123,12 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v20") then
-    guiParent.MacroGameplayGUI_v20:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v21") then
+    guiParent.MacroGameplayGUI_v21:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v20"
+screenGui.Name = "MacroGameplayGUI_v21"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
@@ -150,7 +149,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD (Smart Cash Filter)"
+title.Text = "Macro TD (Fixed Record & Cash Guard)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -444,7 +443,7 @@ saveBtn.MouseButton1Click:Connect(function()
         table.insert(serializedRec, {
             Type = act.Type, Time = act.Time, RemoteName = act.Remote.Name, Method = act.Method,
             Args = serializeVal(act.Args), TowerIndex = act.TowerIndex, TargetIndex = act.TargetIndex,
-            PositionCF = act.PositionCF and serializeVal(act.PositionCF) or nil, EstimatedCost = act.EstimatedCost or 0
+            PositionCF = act.PositionCF and serializeVal(act.PositionCF) or nil
         })
     end
     
@@ -481,8 +480,7 @@ function loadMacroFromFile(mName)
                 Type = act.Type, Time = act.Time, Remote = remoteObj or ReplicatedStorage,
                 RemoteName = act.RemoteName, Method = act.Method, Args = deserializeVal(act.Args),
                 TowerIndex = act.TowerIndex, TargetIndex = act.TargetIndex,
-                PositionCF = act.PositionCF and deserializeVal(act.PositionCF) or nil,
-                EstimatedCost = act.EstimatedCost or 0
+                PositionCF = act.PositionCF and deserializeVal(act.PositionCF) or nil
             })
         end
         
@@ -648,7 +646,7 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     return processTable(oldArgs)
 end
 
--- Hook Remote dengan Filter Cash
+-- Hook Remote Normal (Tanpa Filter Berbahaya Saat Record)
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -659,16 +657,6 @@ if not getgenv().MacroHookedTD then
         if isRecording and (method == "FireServer" or method == "InvokeServer") then
             local rName = self.Name
             if rName == "TowerAdd" or rName == "TowerUpgrade" or rName == "TowerSell" then
-                local cashBefore = getPlayerCash()
-                task.wait(0.1) -- Jeda singkat untuk membiarkan server memproses transaksi
-                local cashAfter = getPlayerCash()
-                
-                -- Jika aksi adalah Place atau Upgrade dan cash tidak berkurang, anggap gagal/tidak cukup uang
-                if (rName == "TowerAdd" or rName == "TowerUpgrade") and cashAfter >= cashBefore then
-                    logConsole("[Rec Skip] Gagal (Cash Tidak Cukup): " .. rName)
-                    return oldNamecall(self, ...)
-                end
-
                 task.spawn(function()
                     pcall(function()
                         local timeStamp = tick() - recordStartTime
@@ -682,7 +670,7 @@ if not getgenv().MacroHookedTD then
                                 Type = "ADD", Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf
                             })
-                            logConsole(string.format("[Rec] TowerAdd #%d Berhasil", currentIdx))
+                            logConsole(string.format("[Rec] TowerAdd #%d", currentIdx))
                             
                             task.delay(0.5, function()
                                 local model = findTowerNearPosition(cf)
@@ -699,7 +687,7 @@ if not getgenv().MacroHookedTD then
                                 Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TargetIndex = targetIdx
                             })
-                            logConsole(string.format("[Rec] %s -> Tower #%d Berhasil", rName, targetIdx))
+                            logConsole(string.format("[Rec] %s -> Tower #%d", rName, targetIdx))
                         end
                     end)
                 end)
@@ -720,7 +708,7 @@ recordBtn.MouseButton1Click:Connect(function()
         recordStartTime = tick()
         recordBtn.Text = "Record: ON"
         recordBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        logConsole("RECORDING STARTED (Cash Filter Active)...")
+        logConsole("RECORDING STARTED...")
     else
         recordBtn.Text = "Record: OFF"
         recordBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
@@ -756,7 +744,7 @@ function startPlayback()
                 -- Sistem Menunggu Cash Cukup Saat Playback
                 if action.Type == "ADD" or action.Type == "UPGRADE" then
                     local timeout = 0
-                    while isPlaying and getPlayerCash() < 50 and timeout < 30 do -- Cek estimasi minimal atau tunggu sampai uang bertambah
+                    while isPlaying and getPlayerCash() < 50 and timeout < 30 do
                         logConsole(string.format("[%d/%d] Menunggu Cash Cukup...", index, #recordedData))
                         task.wait(1)
                         timeout = timeout + 1
