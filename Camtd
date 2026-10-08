@@ -1,4 +1,4 @@
--- Macro TD v30 - Proximity Target Locking & Cash Guard
+-- Macro TD v32 - Precise Cost-Based Cash Waiter & Proximity Target Lock
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -118,12 +118,12 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v30") then
-    guiParent.MacroGameplayGUI_v30:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v32") then
+    guiParent.MacroGameplayGUI_v32:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v30"
+screenGui.Name = "MacroGameplayGUI_v32"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
@@ -144,7 +144,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v30 (Proximity Target Lock)"
+title.Text = "Macro TD v32 (Precise Cost Waiter)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -390,7 +390,7 @@ saveBtn.MouseButton1Click:Connect(function()
         table.insert(serializedRec, {
             Type = act.Type, Time = act.Time, RemoteName = act.Remote.Name, Method = act.Method,
             Args = serializeVal(act.Args), TowerIndex = act.TowerIndex, TargetIndex = act.TargetIndex,
-            PositionCF = act.PositionCF and serializeVal(act.PositionCF) or nil
+            PositionCF = act.PositionCF and serializeVal(act.PositionCF) or nil, CashCost = act.CashCost or 150
         })
     end
     
@@ -427,13 +427,14 @@ function loadMacroFromFile(mName)
                 Type = act.Type, Time = act.Time, Remote = remoteObj or ReplicatedStorage,
                 RemoteName = act.RemoteName, Method = act.Method, Args = deserializeVal(act.Args),
                 TowerIndex = act.TowerIndex, TargetIndex = act.TargetIndex,
-                PositionCF = act.PositionCF and deserializeVal(act.PositionCF) or nil
+                PositionCF = act.PositionCF and deserializeVal(act.PositionCF) or nil,
+                CashCost = act.CashCost or 150
             })
         end
         
         for idxStr, tInfo in pairs(data.Towers) do
             local idx = tonumber(idxStr)
-            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and deserializeVal(tInfo.PositionCF) or nil }
+            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil }
         end
         return true
     end)
@@ -498,7 +499,6 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
--- FUNGSI PENGUNCI TARGET BERDASARKAN POSISI PLAYER SAAT KLIK UPGRADE
 local function resolveTargetIndexByPlayerProximity()
     local char = LocalPlayer.Character
     if not char then return 1 end
@@ -522,7 +522,7 @@ local function resolveTargetIndexByPlayerProximity()
     return bestIdx
 end
 
--- Hook Remote
+-- Hook Remote dengan Perekaman Biaya Asli (CashCost)
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -536,6 +536,9 @@ if not getgenv().MacroHookedTD then
                 task.spawn(function()
                     pcall(function()
                         local timeStamp = tick() - recordStartTime
+                        local cashBefore = getPlayerCash()
+                        
+                        -- Eksekusi pendeteksian target sebelum/sesudah remote
                         if rName == "TowerAdd" then
                             towerCounter = towerCounter + 1
                             local currentIdx = towerCounter
@@ -550,20 +553,32 @@ if not getgenv().MacroHookedTD then
                             end
                             
                             recordedTowers[currentIdx] = { Index = currentIdx, PositionCF = cf }
+                            
+                            -- Tunggu sebentar untuk menghitung selisih harga (cost)
+                            task.wait(0.2)
+                            local cashAfter = getPlayerCash()
+                            local cost = cashBefore - cashAfter
+                            if cost <= 0 or cost > 100000 then cost = 200 end
+                            
                             table.insert(recordedData, {
                                 Type = "ADD", Time = timeStamp, Remote = self, Method = method,
-                                Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf
+                                Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = cost
                             })
-                            logConsole(string.format("[Rec] TowerAdd #%d Disimpan", currentIdx))
+                            logConsole(string.format("[Rec] TowerAdd #%d (Cost: %d)", currentIdx, cost))
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
-                            -- Kunci target berdasarkan posisi player berdiri saat meng-upgrade tower tersebut
                             local targetIdx = resolveTargetIndexByPlayerProximity()
+                            
+                            task.wait(0.2)
+                            local cashAfter = getPlayerCash()
+                            local cost = cashBefore - cashAfter
+                            if cost <= 0 or cost > 100000 then cost = 150 end
+                            
                             table.insert(recordedData, {
                                 Type = (rName == "TowerUpgrade" and "UPGRADE" or "SELL"),
                                 Time = timeStamp, Remote = self, Method = method,
-                                Args = serializeVal(args), TargetIndex = targetIdx
+                                Args = serializeVal(args), TargetIndex = targetIdx, CashCost = cost
                             })
-                            logConsole(string.format("[Rec] %s -> Tower #%d (Locked by Proximity)", rName, targetIdx))
+                            logConsole(string.format("[Rec] %s -> Tower #%d (Cost: %d)", rName, targetIdx, cost))
                         end
                     end)
                 end)
@@ -600,7 +615,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED...")
+    logConsole("PLAYBACK STARTED (Precise Cost Waiter Active)...")
     
     task.spawn(function()
         local playbackStart = tick()
@@ -616,14 +631,16 @@ function startPlayback()
                 local remoteObj = action.Remote or ReplicatedStorage:FindFirstChild(action.RemoteName, true)
                 local realArgs = deserializeVal(action.Args)
                 
+                -- MENUNGGU DENGAN SABAR TANPA BATAS WAKTU UNTUK SEMUA AKSI (ADD & UPGRADE)
                 if action.Type == "ADD" or action.Type == "UPGRADE" then
-                    local timeout = 0
-                    while isPlaying and getPlayerCash() < 50 and timeout < 30 do
-                        logConsole(string.format("[%d/%d] Menunggu Cash Cukup...", index, #recordedData))
+                    local requiredCost = action.CashCost or 100
+                    while isPlaying and getPlayerCash() < requiredCost do
+                        logConsole(string.format("[%d/%d] Menunggu Cash Cukup untuk %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
                         task.wait(1)
-                        timeout = timeout + 1
                     end
                 end
+
+                if not isPlaying then return end
 
                 if action.Type == "ADD" then
                     local beforeSnapshot = {}
@@ -646,7 +663,7 @@ function startPlayback()
                                 end
                             end
                         end
-                    until newlySpawnedModel or timer >= 3.5
+                    until newlySpawnedModel or timer >= 4.0
                     
                     if not newlySpawnedModel and action.PositionCF then
                         local excludeInstances = {}
