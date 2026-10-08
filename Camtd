@@ -1,4 +1,4 @@
--- Macro TD v28 - Dynamic Model Binding & Accurate Target Resolution
+-- Macro TD v29 - Strict Coordinate & Distance-Based Target Resolution
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -118,12 +118,12 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v28") then
-    guiParent.MacroGameplayGUI_v28:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v29") then
+    guiParent.MacroGameplayGUI_v29:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v28"
+screenGui.Name = "MacroGameplayGUI_v29"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
@@ -144,7 +144,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v28 (Dynamic Binding)"
+title.Text = "Macro TD v29 (Strict Coordinate Match)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -509,55 +509,36 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
--- LOGIKA BARU: Dynamic Model Binding saat Upgrade/Sell
-local function resolveTargetIndex(args)
-    local inst = getInstanceFromArgs(args)
-    local targetModel = nil
-    if inst then
-        if inst:IsA("Model") then
-            targetModel = inst
-        else
-            targetModel = inst:FindFirstAncestorOfClass("Model")
-        end
-    end
-
-    -- 1. Cek apakah model ini sudah terikat sebelumnya
-    if targetModel then
-        for idx, tInfo in pairs(recordedTowers) do
-            if tInfo.Instance == targetModel then
-                return idx
-            end
-        end
-    end
-
-    -- 2. Cari berdasarkan posisi terdekat dan langsung ikat secara otomatis (Dynamic Binding)
+-- PENYELESAIAN TARGET BERDASARKAN TITIK KOORDINAT JARAK TERDEKAT (STRICT COORDINATE MATCHING)
+local function resolveTargetIndexByStrictCoordinates(args)
     local targetPos = nil
-    if targetModel then
-        local root = getRootFromModel(targetModel)
-        if root then targetPos = root.Position end
+    
+    -- 1. Cek apakah argumen langsung membawa CFrame atau Vector3
+    local cf = getCFrameFromArgs(args)
+    if cf then targetPos = cf.Position end
+    
+    -- 2. Jika tidak ada, cari Instance model di dalam argumen lalu ambil posisi posisinya di Workspace
+    if not targetPos then
+        local inst = getInstanceFromArgs(args)
+        if inst then
+            local model = inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model")
+            local root = getRootFromModel(model or inst)
+            if root then targetPos = root.Position end
+        end
     end
     
-    if not targetPos then
-        local cf = getCFrameFromArgs(args)
-        if cf then targetPos = cf.Position end
-    end
-
+    -- 3. Bandingkan titik koordinat tersebut dengan titik koordinat setiap tower yang sudah direkam
     if targetPos then
         local minDist = 999999
         local bestIdx = 1
         for idx, tInfo in pairs(recordedTowers) do
             if tInfo.PositionCF then
-                local d = (tInfo.PositionCF.Position - targetPos).Magnitude
-                if d < minDist then
-                    minDist = d
+                local dist = (tInfo.PositionCF.Position - targetPos).Magnitude
+                if dist < minDist then
+                    minDist = dist
                     bestIdx = idx
                 end
             end
-        end
-        
-        -- Ikat model instance ke index terbaik agar ke depannya langsung dikenali secara akurat
-        if targetModel and recordedTowers[bestIdx] then
-            recordedTowers[bestIdx].Instance = targetModel
         end
         return bestIdx
     end
@@ -584,41 +565,27 @@ if not getgenv().MacroHookedTD then
                             local currentIdx = towerCounter
                             local cf = getCFrameFromArgs(args)
                             
+                            -- Ambil posisi model langsung dari workspace jika CFrame argumen kosong
+                            if not cf then
+                                task.wait(0.1)
+                                local model = findTowerNearPosition(LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character.HumanoidRootPart.Position or Vector3.new(0,0,0))
+                                if model then cf = model:GetPivot() end
+                            end
+                            
                             recordedTowers[currentIdx] = { Index = currentIdx, PositionCF = cf }
                             table.insert(recordedData, {
                                 Type = "ADD", Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf
                             })
-                            logConsole(string.format("[Rec] TowerAdd #%d", currentIdx))
-                            
-                            -- Cari model tower di Workspace secara langsung
-                            task.spawn(function()
-                                local timer = 0
-                                local model = nil
-                                while timer < 3 do
-                                    task.wait(0.1)
-                                    timer = timer + 0.1
-                                    local excludeInstances = {}
-                                    for k, t in pairs(recordedTowers) do
-                                        if k ~= currentIdx and t.Instance then
-                                            excludeInstances[t.Instance] = true
-                                        end
-                                    end
-                                    model = findTowerNearPosition(cf, excludeInstances)
-                                    if model then break end
-                                end
-                                if model and recordedTowers[currentIdx] then
-                                    recordedTowers[currentIdx].Instance = model
-                                end
-                            end)
+                            logConsole(string.format("[Rec] TowerAdd #%d di Koordinat Disimpan", currentIdx))
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
-                            local targetIdx = resolveTargetIndex(args)
+                            local targetIdx = resolveTargetIndexByStrictCoordinates(args)
                             table.insert(recordedData, {
                                 Type = (rName == "TowerUpgrade" and "UPGRADE" or "SELL"),
                                 Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TargetIndex = targetIdx
                             })
-                            logConsole(string.format("[Rec] %s -> Tower #%d", rName, targetIdx))
+                            logConsole(string.format("[Rec] %s -> Tower #%d (Strict Coords)", rName, targetIdx))
                         end
                     end)
                 end)
@@ -638,7 +605,7 @@ recordBtn.MouseButton1Click:Connect(function()
         recordStartTime = tick()
         recordBtn.Text = "Record: ON"
         recordBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        logConsole("RECORDING STARTED...")
+        logConsole("RECORDING STARTED (Strict Coordinate Mode)...")
     else
         recordBtn.Text = "Record: OFF"
         recordBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
