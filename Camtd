@@ -1,4 +1,4 @@
--- Macro TD v24 - Left Position, Scoring Target Fix (Upgrade/Sell), Cash Guard
+-- Macro TD v25 - Strict Model Exclusion, Scoring Target Fix & Cash Guard
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -122,12 +122,12 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v24") then
-    guiParent.MacroGameplayGUI_v24:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v25") then
+    guiParent.MacroGameplayGUI_v25:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v24"
+screenGui.Name = "MacroGameplayGUI_v25"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
@@ -148,7 +148,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD (Scoring Target & Cash Guard)"
+title.Text = "Macro TD v25 (Strict Exclude Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -461,7 +461,20 @@ loadBtn.MouseButton1Click:Connect(function()
     loadMacroFromFile(nameBox.Text)
 end)
 
--- Helper Ekstraksi ID & Sistem Skor
+-- Solver Helper Lanjutan (Strict Model Identifiers)
+local function getRootFromModel(model)
+    if not model then return nil end
+    if model:IsA("Model") then
+        if model.PrimaryPart then return model.PrimaryPart end
+        if model:FindFirstChild("HumanoidRootPart") then return model.HumanoidRootPart end
+    end
+    if model:IsA("BasePart") then return model end
+    for _, child in ipairs(model:GetDescendants()) do
+        if child:IsA("BasePart") then return child end
+    end
+    return nil
+end
+
 local function deepExtractStrings(val, list)
     list = list or {}
     if type(val) == "string" or type(val) == "number" then
@@ -478,7 +491,7 @@ local function extractAllIDsFromModel(inst)
     for k, v in pairs(inst:GetAttributes()) do
         if type(v) == "string" or type(v) == "number" then table.insert(ids, tostring(v)) end
     end
-    for _, child in ipairs(inst:GetChildren()) do
+    for _, child in ipairs(inst:GetDescendants()) do
         if child:IsA("StringValue") or child:IsA("IntValue") or child:IsA("NumberValue") then 
             table.insert(ids, tostring(child.Value)) 
             table.insert(ids, child.Name)
@@ -518,28 +531,44 @@ local function getInstanceFromArgs(args)
     return nil
 end
 
-local function findTowerNearPosition(targetPos)
+-- FIX UTAMA: Pengecualian model (excludeInstances) agar Tower #2 tidak mengambil data Tower #1
+local function findTowerNearPosition(targetPos, excludeInstances)
+    excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
     if typeof(targetPos) == "CFrame" then targetPos = targetPos.Position end
-    local closest, closestDist = nil, 15
+    local closest, closestDist = nil, 7
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj ~= LocalPlayer.Character then
-            local root = obj.PrimaryPart or obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChildOfClass("BasePart")
-            if root then
-                local dist = (root.Position - targetPos).Magnitude
-                if dist < closestDist then closestDist = dist; closest = obj end
+            if not excludeInstances[obj] then
+                local root = getRootFromModel(obj)
+                if root then
+                    local dist = (root.Position - targetPos).Magnitude
+                    if dist < closestDist then 
+                        closestDist = dist
+                        closest = obj 
+                    end
+                end
             end
         end
     end
     return closest
 end
 
--- SISTEM SKOR BARU (Memperbaiki Target Tersasar ke #1)
 local function resolveTargetIndex(args)
-    -- 1. Cek dari Instance secara langsung
+    -- 1. Cek via Object Reference
     local inst = getInstanceFromArgs(args)
-    if inst and inst:IsA("Model") then
-        local root = inst.PrimaryPart or inst:FindFirstChild("HumanoidRootPart") or inst:FindFirstChildOfClass("BasePart")
+    if inst then
+        local model = inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model")
+        
+        if model then
+            for idx, tInfo in pairs(recordedTowers) do
+                if tInfo.Instance and (tInfo.Instance == model) then
+                    return idx
+                end
+            end
+        end
+        
+        local root = getRootFromModel(model or inst)
         if root then
             local minDist, bestIdx = 999999, 1
             for idx, tInfo in pairs(recordedTowers) do
@@ -552,7 +581,7 @@ local function resolveTargetIndex(args)
         end
     end
     
-    -- 2. Cek dari Posisi/CFrame
+    -- 2. Cek via CFrame Arguments
     local cf = getCFrameFromArgs(args)
     if cf then
         local minDist, bestIdx = 999999, 1
@@ -565,7 +594,7 @@ local function resolveTargetIndex(args)
         return bestIdx
     end
     
-    -- 3. Pencocokan ID dengan Sistem Skor (Tinggi = Pasti UUID/ID Unik)
+    -- 3. Pencocokan ID dengan Sistem Skor
     local extractedStrings = deepExtractStrings(args)
     local bestMatchIdx = 1
     local highestScore = -1
@@ -578,11 +607,11 @@ local function resolveTargetIndex(args)
                     if tostring(str) == tostring(recID) then
                         local strLen = #tostring(str)
                         if strLen > 10 or tostring(str):match("%-") then
-                            score = score + 100 -- Skor raksasa untuk string panjang (kemungkinan besar UUID server)
-                        elseif strLen > 4 then
-                            score = score + 5 -- Skor sedang untuk nama tower unik
+                            score = score + 100
+                        elseif strLen > 3 then
+                            score = score + 5
                         else
-                            score = score + 1 -- Skor kecil untuk harga/ID pendek
+                            score = score + 1
                         end
                     end
                 end
@@ -594,10 +623,7 @@ local function resolveTargetIndex(args)
         end
     end
     
-    if highestScore > 0 then
-        return bestMatchIdx
-    end
-    
+    if highestScore > 0 then return bestMatchIdx end
     return 1
 end
 
@@ -670,12 +696,33 @@ if not getgenv().MacroHookedTD then
                             })
                             logConsole(string.format("[Rec] TowerAdd #%d", currentIdx))
                             
-                            task.delay(0.5, function()
-                                local model = findTowerNearPosition(cf)
+                            -- FIX: Pengecualian model & perpanjang delay scan hingga 5 detik
+                            task.spawn(function()
+                                local timer = 0
+                                local model = nil
+                                while timer < 5 do
+                                    task.wait(0.2)
+                                    timer = timer + 0.2
+                                    
+                                    local excludeInstances = {}
+                                    for k, t in pairs(recordedTowers) do
+                                        if k ~= currentIdx and t.Instance then
+                                            excludeInstances[t.Instance] = true
+                                        end
+                                    end
+                                    
+                                    model = findTowerNearPosition(cf, excludeInstances)
+                                    if model then break end
+                                end
+                                
                                 if model and recordedTowers[currentIdx] then
+                                    recordedTowers[currentIdx].Instance = model
                                     for _, id in ipairs(extractAllIDsFromModel(model)) do
                                         table.insert(recordedTowers[currentIdx].IDs, id)
                                     end
+                                    logConsole(string.format("[Rec] Scan Model Tower #%d Sukses", currentIdx))
+                                else
+                                    logConsole(string.format("[Warn] Gagal scan model Tower #%d", currentIdx))
                                 end
                             end)
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
@@ -723,7 +770,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Cash Waiting Guard Active)...")
+    logConsole("PLAYBACK STARTED (Cash Guard Active)...")
     
     task.spawn(function()
         local playbackStart = tick()
@@ -739,7 +786,7 @@ function startPlayback()
                 local remoteObj = action.Remote or ReplicatedStorage:FindFirstChild(action.RemoteName, true)
                 local realArgs = deserializeVal(action.Args)
                 
-                -- Sistem Menunggu Cash Cukup Saat Playback
+                -- Sistem Menunggu Cash Cukup
                 if action.Type == "ADD" or action.Type == "UPGRADE" then
                     local timeout = 0
                     while isPlaying and getPlayerCash() < 50 and timeout < 30 do
@@ -765,15 +812,17 @@ function startPlayback()
                         timer = timer + 0.1
                         for _, v in ipairs(Workspace:GetDescendants()) do
                             if v:IsA("Model") and not beforeSnapshot[v] and v ~= LocalPlayer.Character then
-                                if v.PrimaryPart or v:FindFirstChild("HumanoidRootPart") or v:FindFirstChildOfClass("BasePart") then
+                                if getRootFromModel(v) then
                                     newlySpawnedModel = v; break
                                 end
                             end
                         end
-                    until newlySpawnedModel or timer >= 2.5
+                    until newlySpawnedModel or timer >= 3.5
                     
                     if not newlySpawnedModel and action.PositionCF then
-                        newlySpawnedModel = findTowerNearPosition(action.PositionCF)
+                        local excludeInstances = {}
+                        for _, t in pairs(sessionTowers) do excludeInstances[t] = true end
+                        newlySpawnedModel = findTowerNearPosition(action.PositionCF, excludeInstances)
                     end
                     
                     if newlySpawnedModel then
@@ -787,7 +836,11 @@ function startPlayback()
                     local currentModel = sessionTowers[targetIdx]
                     
                     if not currentModel and recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
-                        currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF)
+                        local excludeInstances = {}
+                        for k, t in pairs(sessionTowers) do 
+                            if k ~= targetIdx then excludeInstances[t] = true end 
+                        end
+                        currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF, excludeInstances)
                     end
                     
                     if currentModel then
