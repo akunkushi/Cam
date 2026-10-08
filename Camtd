@@ -1,4 +1,4 @@
--- Macro TD v27 - Instant Model Capture & Accurate Target Index Fix
+-- Macro TD v28 - Dynamic Model Binding & Accurate Target Resolution
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -118,12 +118,12 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v27") then
-    guiParent.MacroGameplayGUI_v27:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v28") then
+    guiParent.MacroGameplayGUI_v28:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v27"
+screenGui.Name = "MacroGameplayGUI_v28"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
@@ -144,7 +144,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v27 (Instant Model Match)"
+title.Text = "Macro TD v28 (Dynamic Binding)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -509,28 +509,39 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
--- PENCARIAN TARGET AKURAT BERDASARKAN INSTANCE MODEL LANGSUNG
+-- LOGIKA BARU: Dynamic Model Binding saat Upgrade/Sell
 local function resolveTargetIndex(args)
     local inst = getInstanceFromArgs(args)
+    local targetModel = nil
     if inst then
-        local model = inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model")
-        if model then
-            for idx, tInfo in pairs(recordedTowers) do
-                if tInfo.Instance == model then
-                    return idx
-                end
+        if inst:IsA("Model") then
+            targetModel = inst
+        else
+            targetModel = inst:FindFirstAncestorOfClass("Model")
+        end
+    end
+
+    -- 1. Cek apakah model ini sudah terikat sebelumnya
+    if targetModel then
+        for idx, tInfo in pairs(recordedTowers) do
+            if tInfo.Instance == targetModel then
+                return idx
             end
         end
     end
-    
-    -- Fallback ke posisi terdekat jika instance tidak langsung cocok
-    local cf = getCFrameFromArgs(args)
-    local targetPos = cf and cf.Position or nil
-    if not targetPos and inst then
-        local root = getRootFromModel(inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model"))
+
+    -- 2. Cari berdasarkan posisi terdekat dan langsung ikat secara otomatis (Dynamic Binding)
+    local targetPos = nil
+    if targetModel then
+        local root = getRootFromModel(targetModel)
         if root then targetPos = root.Position end
     end
     
+    if not targetPos then
+        local cf = getCFrameFromArgs(args)
+        if cf then targetPos = cf.Position end
+    end
+
     if targetPos then
         local minDist = 999999
         local bestIdx = 1
@@ -542,6 +553,11 @@ local function resolveTargetIndex(args)
                     bestIdx = idx
                 end
             end
+        end
+        
+        -- Ikat model instance ke index terbaik agar ke depannya langsung dikenali secara akurat
+        if targetModel and recordedTowers[bestIdx] then
+            recordedTowers[bestIdx].Instance = targetModel
         end
         return bestIdx
     end
@@ -575,19 +591,24 @@ if not getgenv().MacroHookedTD then
                             })
                             logConsole(string.format("[Rec] TowerAdd #%d", currentIdx))
                             
-                            -- PENCARIAN MODEL INSTANT (0.1 detik agar langsung terikat ke recordedTowers)
+                            -- Cari model tower di Workspace secara langsung
                             task.spawn(function()
-                                task.wait(0.1)
-                                local excludeInstances = {}
-                                for k, t in pairs(recordedTowers) do
-                                    if k ~= currentIdx and t.Instance then
-                                        excludeInstances[t.Instance] = true
+                                local timer = 0
+                                local model = nil
+                                while timer < 3 do
+                                    task.wait(0.1)
+                                    timer = timer + 0.1
+                                    local excludeInstances = {}
+                                    for k, t in pairs(recordedTowers) do
+                                        if k ~= currentIdx and t.Instance then
+                                            excludeInstances[t.Instance] = true
+                                        end
                                     end
+                                    model = findTowerNearPosition(cf, excludeInstances)
+                                    if model then break end
                                 end
-                                local model = findTowerNearPosition(cf, excludeInstances)
                                 if model and recordedTowers[currentIdx] then
                                     recordedTowers[currentIdx].Instance = model
-                                    logConsole(string.format("[Rec] Bind Model ke Tower #%d Sukses", currentIdx))
                                 end
                             end)
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
