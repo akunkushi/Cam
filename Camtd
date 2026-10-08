@@ -1,4 +1,4 @@
--- Macro TD v32 - Precise Cost-Based Cash Waiter & Proximity Target Lock
+-- Macro TD v33 - Deep Argument Rebuilder for Upgrade/Sell & Precise Cost Waiter
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -118,12 +118,12 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v32") then
-    guiParent.MacroGameplayGUI_v32:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v33") then
+    guiParent.MacroGameplayGUI_v33:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v32"
+screenGui.Name = "MacroGameplayGUI_v33"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
@@ -144,7 +144,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v32 (Precise Cost Waiter)"
+title.Text = "Macro TD v33 (Deep Argument Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -390,13 +390,14 @@ saveBtn.MouseButton1Click:Connect(function()
         table.insert(serializedRec, {
             Type = act.Type, Time = act.Time, RemoteName = act.Remote.Name, Method = act.Method,
             Args = serializeVal(act.Args), TowerIndex = act.TowerIndex, TargetIndex = act.TargetIndex,
-            PositionCF = act.PositionCF and serializeVal(act.PositionCF) or nil, CashCost = act.CashCost or 150
+            PositionCF = act.PositionCF and serializeVal(act.PositionCF) or nil, CashCost = act.CashCost or 150,
+            TowerIDs = act.TowerIDs
         })
     end
     
     local serializedTowers = {}
     for idx, tInfo in pairs(recordedTowers) do
-        serializedTowers[tostring(idx)] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil }
+        serializedTowers[tostring(idx)] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil, IDs = tInfo.IDs }
     end
     
     local fileContent = HttpService:JSONEncode({ Record = serializedRec, Towers = serializedTowers })
@@ -428,13 +429,14 @@ function loadMacroFromFile(mName)
                 RemoteName = act.RemoteName, Method = act.Method, Args = deserializeVal(act.Args),
                 TowerIndex = act.TowerIndex, TargetIndex = act.TargetIndex,
                 PositionCF = act.PositionCF and deserializeVal(act.PositionCF) or nil,
-                CashCost = act.CashCost or 150
+                CashCost = act.CashCost or 150,
+                TowerIDs = act.TowerIDs
             })
         end
         
         for idxStr, tInfo in pairs(data.Towers) do
             local idx = tonumber(idxStr)
-            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil }
+            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and deserializeVal(tInfo.PositionCF) or nil, IDs = tInfo.IDs or {} }
         end
         return true
     end)
@@ -475,6 +477,26 @@ local function getCFrameFromArgs(args)
         end
     end
     return nil
+end
+
+local function extractAllIDsFromModel(inst)
+    if not inst or not inst:IsA("Instance") then return {} end
+    local ids = {inst.Name}
+    for k, v in pairs(inst:GetAttributes()) do
+        if type(v) == "string" or type(v) == "number" then table.insert(ids, tostring(v)) end
+    end
+    for _, child in ipairs(inst:GetDescendants()) do
+        if child:IsA("ValueBase") and child.Value then table.insert(ids, tostring(child.Value)) end
+    end
+    return ids
+end
+
+local function getPrimaryID(inst)
+    if not inst or not inst:IsA("Instance") then return nil end
+    for k, v in pairs(inst:GetAttributes()) do
+        if k:lower():find("id") or k:lower():find("uuid") then return tostring(v) end
+    end
+    return inst.Name
 end
 
 local function findTowerNearPosition(targetPos, excludeInstances)
@@ -522,7 +544,56 @@ local function resolveTargetIndexByPlayerProximity()
     return bestIdx
 end
 
--- Hook Remote dengan Perekaman Biaya Asli (CashCost)
+-- Deep Argument Rebuilder untuk Playback Upgrade/Sell
+local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
+    if not newModel then return oldArgs end
+    local newPrimaryID = getPrimaryID(newModel)
+    local targetRoot = getRootFromModel(newModel)
+    
+    local function processTable(tbl)
+        local res = {}
+        for k, v in pairs(tbl) do
+            if typeof(v) == "Instance" then
+                if v:IsA("Player") or v == LocalPlayer or (LocalPlayer.Character and v:IsDescendantOf(LocalPlayer.Character)) then
+                    res[k] = v
+                else
+                    res[k] = newModel
+                end
+            elseif typeof(v) == "CFrame" and targetRoot then
+                res[k] = targetRoot.CFrame
+            elseif typeof(v) == "Vector3" and targetRoot then
+                res[k] = targetRoot.Position
+            elseif type(v) == "string" or type(v) == "number" then
+                local strVal = tostring(v)
+                local replaced = false
+                if recordedIDsList then
+                    for _, oldID in ipairs(recordedIDsList) do
+                        if strVal == tostring(oldID) then
+                            res[k] = newPrimaryID or newModel.Name
+                            replaced = true
+                            break
+                        end
+                    end
+                end
+                if not replaced then
+                    if (strVal:find("-") or #strVal >= 5 or strVal:find("Tower")) and newPrimaryID then
+                        res[k] = newPrimaryID
+                    else
+                        res[k] = v
+                    end
+                end
+            elseif type(v) == "table" then
+                res[k] = processTable(v)
+            else
+                res[k] = v
+            end
+        end
+        return res
+    end
+    return processTable(oldArgs)
+end
+
+-- Hook Remote dengan Rekaman Data ID Tower Terkait
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -538,7 +609,6 @@ if not getgenv().MacroHookedTD then
                         local timeStamp = tick() - recordStartTime
                         local cashBefore = getPlayerCash()
                         
-                        -- Eksekusi pendeteksian target sebelum/sesudah remote
                         if rName == "TowerAdd" then
                             towerCounter = towerCounter + 1
                             local currentIdx = towerCounter
@@ -552,9 +622,8 @@ if not getgenv().MacroHookedTD then
                                 if model then cf = model:GetPivot() end
                             end
                             
-                            recordedTowers[currentIdx] = { Index = currentIdx, PositionCF = cf }
+                            recordedTowers[currentIdx] = { Index = currentIdx, PositionCF = cf, IDs = {} }
                             
-                            -- Tunggu sebentar untuk menghitung selisih harga (cost)
                             task.wait(0.2)
                             local cashAfter = getPlayerCash()
                             local cost = cashBefore - cashAfter
@@ -565,6 +634,15 @@ if not getgenv().MacroHookedTD then
                                 Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = cost
                             })
                             logConsole(string.format("[Rec] TowerAdd #%d (Cost: %d)", currentIdx, cost))
+                            
+                            -- Ambil ID model tower yang baru di-place
+                            task.spawn(function()
+                                task.wait(0.3)
+                                local model = findTowerNearPosition(cf)
+                                if model and recordedTowers[currentIdx] then
+                                    recordedTowers[currentIdx].IDs = extractAllIDsFromModel(model)
+                                end
+                            end)
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
                             local targetIdx = resolveTargetIndexByPlayerProximity()
                             
@@ -573,10 +651,13 @@ if not getgenv().MacroHookedTD then
                             local cost = cashBefore - cashAfter
                             if cost <= 0 or cost > 100000 then cost = 150 end
                             
+                            local targetIDs = recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs or nil
+                            
                             table.insert(recordedData, {
                                 Type = (rName == "TowerUpgrade" and "UPGRADE" or "SELL"),
                                 Time = timeStamp, Remote = self, Method = method,
-                                Args = serializeVal(args), TargetIndex = targetIdx, CashCost = cost
+                                Args = serializeVal(args), TargetIndex = targetIdx, CashCost = cost,
+                                TowerIDs = targetIDs
                             })
                             logConsole(string.format("[Rec] %s -> Tower #%d (Cost: %d)", rName, targetIdx, cost))
                         end
@@ -615,7 +696,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Precise Cost Waiter Active)...")
+    logConsole("PLAYBACK STARTED (Deep Rebuilder Active)...")
     
     task.spawn(function()
         local playbackStart = tick()
@@ -631,11 +712,11 @@ function startPlayback()
                 local remoteObj = action.Remote or ReplicatedStorage:FindFirstChild(action.RemoteName, true)
                 local realArgs = deserializeVal(action.Args)
                 
-                -- MENUNGGU DENGAN SABAR TANPA BATAS WAKTU UNTUK SEMUA AKSI (ADD & UPGRADE)
+                -- Penunggu Cash Presisi Tanpa Batas Waktu
                 if action.Type == "ADD" or action.Type == "UPGRADE" then
                     local requiredCost = action.CashCost or 100
                     while isPlaying and getPlayerCash() < requiredCost do
-                        logConsole(string.format("[%d/%d] Menunggu Cash Cukup untuk %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
+                        logConsole(string.format("[%d/%d] Menunggu Cash %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
                         task.wait(1)
                     end
                 end
@@ -690,22 +771,12 @@ function startPlayback()
                     end
                     
                     if currentModel then
-                        task.wait(0.4)
-                        local targetRoot = getRootFromModel(currentModel)
-                        if targetRoot then
-                            for k, v in pairs(realArgs) do
-                                if typeof(v) == "CFrame" then
-                                    realArgs[k] = targetRoot.CFrame
-                                elseif typeof(v) == "Vector3" then
-                                    realArgs[k] = targetRoot.Position
-                                elseif typeof(v) == "Instance" and v:IsA("Model") then
-                                    realArgs[k] = currentModel
-                                end
-                            end
-                        end
+                        task.wait(0.3)
+                        -- Menggunakan Deep Argument Rebuilder agar data/ID remote sesuai dengan model baru
+                        local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
                         
-                        if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
-                        else remoteObj:FireServer(unpack(realArgs)) end
+                        if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
+                        else remoteObj:FireServer(unpack(playArgs)) end
                         logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
                     else
                         logConsole(string.format("[%d/%d] %s Tower #%d FAIL", index, #recordedData, action.Type, targetIdx))
