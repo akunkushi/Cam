@@ -1,4 +1,4 @@
--- Macro TD v23 - Left Position, Fixed Target ID (Upgrade/Sell), Cash Guard & Auto Elevator
+-- Macro TD v24 - Left Position, Scoring Target Fix (Upgrade/Sell), Cash Guard
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -16,7 +16,6 @@ local isRecording = false
 local isPlaying = false
 local autoPlayOnRejoin = false
 local autoElevator = false
-local autoSkipWave = false
 local selectedElevator = "Elevator2"
 
 local recordedData = {}
@@ -123,18 +122,18 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v23") then
-    guiParent.MacroGameplayGUI_v23:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v24") then
+    guiParent.MacroGameplayGUI_v24:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v23"
+screenGui.Name = "MacroGameplayGUI_v24"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 360, 0, 35) -- Auto minimized saat execute
-mainFrame.Position = UDim2.new(0, 20, 0.2, -100) -- Posisi kiri
+mainFrame.Size = UDim2.new(0, 360, 0, 35)
+mainFrame.Position = UDim2.new(0, 20, 0.2, -100) -- Posisi Kiri
 mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
 mainFrame.BorderSizePixel = 0
 mainFrame.Active = true
@@ -149,7 +148,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD (Fix Upgrade Target & Cash Guard)"
+title.Text = "Macro TD (Scoring Target & Cash Guard)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -247,28 +246,18 @@ autoElevatorBtn.TextSize = 11
 autoElevatorBtn.Parent = contentFrame
 
 local autoPlayBtn = Instance.new("TextButton")
-autoPlayBtn.Size = UDim2.new(0, 160, 0, 28)
+autoPlayBtn.Size = UDim2.new(0, 330, 0, 28)
 autoPlayBtn.Position = UDim2.new(0, 15, 0, 115)
 autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-autoPlayBtn.Text = "Auto Play: OFF"
+autoPlayBtn.Text = "Auto Play Rejoin: OFF"
 autoPlayBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 autoPlayBtn.Font = Enum.Font.SourceSansBold
 autoPlayBtn.TextSize = 11
 autoPlayBtn.Parent = contentFrame
 
-local autoSkipBtn = Instance.new("TextButton")
-autoSkipBtn.Size = UDim2.new(0, 160, 0, 28)
-autoSkipBtn.Position = UDim2.new(0, 185, 0, 115)
-autoSkipBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-autoSkipBtn.Text = "Auto Skip Wave: OFF"
-autoSkipBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-autoSkipBtn.Font = Enum.Font.SourceSansBold
-autoSkipBtn.TextSize = 11
-autoSkipBtn.Parent = contentFrame
-
 -- Log Box
 local logFrame = Instance.new("ScrollingFrame")
-logFrame.Size = UDim2.new(0, 330, 0, 215)
+logFrame.Size = UDim2.new(0, 330, 0, 250)
 logFrame.Position = UDim2.new(0, 15, 0, 150)
 logFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
 logFrame.BorderSizePixel = 0
@@ -350,40 +339,12 @@ autoElevatorBtn.MouseButton1Click:Connect(function()
     saveConfig()
 end)
 
--- Auto Skip Wave Loop
-task.spawn(function()
-    while true do
-        task.wait(3)
-        if autoSkipWave then
-            pcall(function()
-                local skipEvent = ReplicatedStorage:FindFirstChild("RemoteEvents") and ReplicatedStorage.RemoteEvents:FindFirstChild("SkipWaveVote")
-                if skipEvent then
-                    skipEvent:FireServer(1)
-                end
-            end)
-        end
-    end
-end)
-
-autoSkipBtn.MouseButton1Click:Connect(function()
-    autoSkipWave = not autoSkipWave
-    if autoSkipWave then
-        autoSkipBtn.Text = "Auto Skip Wave: ON"
-        autoSkipBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-    else
-        autoSkipBtn.Text = "Auto Skip Wave: OFF"
-        autoSkipBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-    end
-    saveConfig()
-end)
-
 -- Save / Load Configurations
 function saveConfig()
     if not writefile then return end
     local cfg = {
         autoPlay = autoPlayOnRejoin,
         autoElevator = autoElevator,
-        autoSkip = autoSkipWave,
         selectedElevator = selectedElevator,
         elevatorIndex = currentElevatorIndex,
         selectedMacro = nameBox.Text
@@ -400,19 +361,15 @@ function loadConfig()
         if data then
             autoPlayOnRejoin = data.autoPlay or false
             autoElevator = data.autoElevator or false
-            autoSkipWave = data.autoSkip or false
             selectedElevator = data.selectedElevator or "Elevator2"
             currentElevatorIndex = data.elevatorIndex or 1
             if data.selectedMacro then nameBox.Text = data.selectedMacro end
             
-            autoPlayBtn.Text = autoPlayOnRejoin and "Auto Play: ON" or "Auto Play: OFF"
+            autoPlayBtn.Text = autoPlayOnRejoin and "Auto Play Rejoin: ON" or "Auto Play Rejoin: OFF"
             autoPlayBtn.BackgroundColor3 = autoPlayOnRejoin and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
             
             autoElevatorBtn.Text = autoElevator and "Auto Elevator: ON" or "Auto Elevator: OFF"
             autoElevatorBtn.BackgroundColor3 = autoElevator and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
-
-            autoSkipBtn.Text = autoSkipWave and "Auto Skip Wave: ON" or "Auto Skip Wave: OFF"
-            autoSkipBtn.BackgroundColor3 = autoSkipWave and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
             
             elevatorSelectBtn.Text = "Map: " .. elevatorOptions[currentElevatorIndex].Name
         end
@@ -422,10 +379,10 @@ end
 autoPlayBtn.MouseButton1Click:Connect(function()
     autoPlayOnRejoin = not autoPlayOnRejoin
     if autoPlayOnRejoin then
-        autoPlayBtn.Text = "Auto Play: ON"
+        autoPlayBtn.Text = "Auto Play Rejoin: ON"
         autoPlayBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
     else
-        autoPlayBtn.Text = "Auto Play: OFF"
+        autoPlayBtn.Text = "Auto Play Rejoin: OFF"
         autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
     end
     saveConfig()
@@ -504,7 +461,7 @@ loadBtn.MouseButton1Click:Connect(function()
     loadMacroFromFile(nameBox.Text)
 end)
 
--- Solver Helper (Pencarian String ID & UUID dikembalikan)
+-- Helper Ekstraksi ID & Sistem Skor
 local function deepExtractStrings(val, list)
     list = list or {}
     if type(val) == "string" or type(val) == "number" then
@@ -522,7 +479,10 @@ local function extractAllIDsFromModel(inst)
         if type(v) == "string" or type(v) == "number" then table.insert(ids, tostring(v)) end
     end
     for _, child in ipairs(inst:GetChildren()) do
-        if child:IsA("ValueBase") and child.Value then table.insert(ids, tostring(child.Value)) end
+        if child:IsA("StringValue") or child:IsA("IntValue") or child:IsA("NumberValue") then 
+            table.insert(ids, tostring(child.Value)) 
+            table.insert(ids, child.Name)
+        end
     end
     return ids
 end
@@ -574,7 +534,9 @@ local function findTowerNearPosition(targetPos)
     return closest
 end
 
+-- SISTEM SKOR BARU (Memperbaiki Target Tersasar ke #1)
 local function resolveTargetIndex(args)
+    -- 1. Cek dari Instance secara langsung
     local inst = getInstanceFromArgs(args)
     if inst and inst:IsA("Model") then
         local root = inst.PrimaryPart or inst:FindFirstChild("HumanoidRootPart") or inst:FindFirstChildOfClass("BasePart")
@@ -590,6 +552,7 @@ local function resolveTargetIndex(args)
         end
     end
     
+    -- 2. Cek dari Posisi/CFrame
     local cf = getCFrameFromArgs(args)
     if cf then
         local minDist, bestIdx = 999999, 1
@@ -602,19 +565,40 @@ local function resolveTargetIndex(args)
         return bestIdx
     end
     
-    -- LOGIKA PEMBACAAN ID DIKEMBALIKAN (Fixed)
+    -- 3. Pencocokan ID dengan Sistem Skor (Tinggi = Pasti UUID/ID Unik)
     local extractedStrings = deepExtractStrings(args)
+    local bestMatchIdx = 1
+    local highestScore = -1
+
     for idx, tInfo in pairs(recordedTowers) do
         if tInfo.IDs then
+            local score = 0
             for _, recID in ipairs(tInfo.IDs) do
                 for _, str in ipairs(extractedStrings) do
-                    if str == recID then return idx end
+                    if tostring(str) == tostring(recID) then
+                        local strLen = #tostring(str)
+                        if strLen > 10 or tostring(str):match("%-") then
+                            score = score + 100 -- Skor raksasa untuk string panjang (kemungkinan besar UUID server)
+                        elseif strLen > 4 then
+                            score = score + 5 -- Skor sedang untuk nama tower unik
+                        else
+                            score = score + 1 -- Skor kecil untuk harga/ID pendek
+                        end
+                    end
                 end
+            end
+            if score > highestScore then
+                highestScore = score
+                bestMatchIdx = idx
             end
         end
     end
     
-    return 1 -- Fallback terakhir jika ID atau CFrame tidak dikenali
+    if highestScore > 0 then
+        return bestMatchIdx
+    end
+    
+    return 1
 end
 
 local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
@@ -660,7 +644,7 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     return processTable(oldArgs)
 end
 
--- Hook Remote 
+-- Hook Remote
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
