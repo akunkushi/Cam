@@ -1,4 +1,4 @@
--- Macro TD - Save/Load, Auto Play, Auto Elevator + Character Teleport, Auto Minimize & Auto Skip Wave
+-- Macro TD - Smart Cash Filter & Wait Guard
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -17,7 +17,7 @@ local isPlaying = false
 local autoPlayOnRejoin = false
 local autoElevator = false
 local autoSkipWave = false
-local selectedElevator = "Elevator2" -- Default Toilet City
+local selectedElevator = "Elevator2"
 
 local recordedData = {}
 local recordedTowers = {}
@@ -30,6 +30,28 @@ local elevatorOptions = {
     {Name = "Cameraman HQ", Code = "Elevator12"}
 }
 local currentElevatorIndex = 1
+
+-- Helper Mendapatkan Cash Player (Mencari di Leaderstats / PlayerGui)
+local function getPlayerCash()
+    local success, cash = pcall(function()
+        if LocalPlayer:FindFirstChild("leaderstats") then
+            local c = LocalPlayer.leaderstats:FindFirstChild("Cash") or LocalPlayer.leaderstats:FindFirstChild("Money") or LocalPlayer.leaderstats:FindFirstChild("Coins")
+            if c then return c.Value end
+        end
+        -- Cek melalui PlayerGui jika menggunakan sistem UI lokal
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        if pg then
+            for _, gui in ipairs(pg:GetDescendants()) do
+                if (gui.Name:lower() == "cash" or gui.Name:lower() == "money" or gui.Name:lower() == "coins") and gui:IsA("TextLabel") then
+                    local num = tonumber(gui.Text:gsub("[^%d]", ""))
+                    if num then return num end
+                end
+            end
+        end
+        return 999999 -- Default aman jika tidak ditemukan agar makro tidak stuck selamanya
+    end)
+    return success and cash or 999999
+end
 
 -- Helper Teleport ke Model Elevator
 local function teleportToElevator(elevatorCode)
@@ -102,17 +124,17 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v19") then
-    guiParent.MacroGameplayGUI_v19:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v20") then
+    guiParent.MacroGameplayGUI_v20:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v19"
+screenGui.Name = "MacroGameplayGUI_v20"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
 local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 360, 0, 35) -- Default minimized saat execute
+mainFrame.Size = UDim2.new(0, 360, 0, 35) -- Auto minimized saat execute
 mainFrame.Position = UDim2.new(0.5, -180, 0.2, -100)
 mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
 mainFrame.BorderSizePixel = 0
@@ -128,7 +150,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD (Elevator + Auto Skip)"
+title.Text = "Macro TD (Smart Cash Filter)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -149,7 +171,7 @@ local contentFrame = Instance.new("Frame")
 contentFrame.Size = UDim2.new(1, 0, 1, -35)
 contentFrame.Position = UDim2.new(0, 0, 0, 35)
 contentFrame.BackgroundTransparency = 1
-contentFrame.Visible = false -- Hidden karena auto minimize
+contentFrame.Visible = false
 contentFrame.Parent = mainFrame
 
 local recordBtn = Instance.new("TextButton")
@@ -225,7 +247,6 @@ autoElevatorBtn.Font = Enum.Font.SourceSansBold
 autoElevatorBtn.TextSize = 11
 autoElevatorBtn.Parent = contentFrame
 
--- Extra Feature Buttons (Auto Play & Auto Skip Wave)
 local autoPlayBtn = Instance.new("TextButton")
 autoPlayBtn.Size = UDim2.new(0, 160, 0, 28)
 autoPlayBtn.Position = UDim2.new(0, 15, 0, 115)
@@ -292,11 +313,10 @@ minimizeBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Elevator & Teleport Logic Loop
+-- Elevator Loop
 elevatorSelectBtn.MouseButton1Click:Connect(function()
     currentElevatorIndex = currentElevatorIndex + 1
     if currentElevatorIndex > #elevatorOptions then currentElevatorIndex = 1 end
-    
     local current = elevatorOptions[currentElevatorIndex]
     selectedElevator = current.Code
     elevatorSelectBtn.Text = "Map: " .. current.Name
@@ -309,11 +329,9 @@ task.spawn(function()
         if autoElevator then
             pcall(function()
                 teleportToElevator(selectedElevator)
-                
                 local Remote = ReplicatedStorage:FindFirstChild("ModuleLoader")
                 if Remote then
-                    local Event = Remote.Shared.Network.RemoteFunction.ElevatorEnter
-                    Event:InvokeServer(selectedElevator)
+                    Remote.Shared.Network.RemoteFunction.ElevatorEnter:InvokeServer(selectedElevator)
                 end
             end)
         end
@@ -424,31 +442,18 @@ saveBtn.MouseButton1Click:Connect(function()
     local serializedRec = {}
     for idx, act in ipairs(recordedData) do
         table.insert(serializedRec, {
-            Type = act.Type,
-            Time = act.Time,
-            RemoteName = act.Remote.Name,
-            Method = act.Method,
-            Args = serializeVal(act.Args),
-            TowerIndex = act.TowerIndex,
-            TargetIndex = act.TargetIndex,
-            PositionCF = act.PositionCF and serializeVal(act.PositionCF) or nil
+            Type = act.Type, Time = act.Time, RemoteName = act.Remote.Name, Method = act.Method,
+            Args = serializeVal(act.Args), TowerIndex = act.TowerIndex, TargetIndex = act.TargetIndex,
+            PositionCF = act.PositionCF and serializeVal(act.PositionCF) or nil, EstimatedCost = act.EstimatedCost or 0
         })
     end
     
     local serializedTowers = {}
     for idx, tInfo in pairs(recordedTowers) do
-        serializedTowers[tostring(idx)] = {
-            Index = tInfo.Index,
-            PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil,
-            IDs = tInfo.IDs
-        }
+        serializedTowers[tostring(idx)] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil, IDs = tInfo.IDs }
     end
     
-    local fileContent = HttpService:JSONEncode({
-        Record = serializedRec,
-        Towers = serializedTowers
-    })
-    
+    local fileContent = HttpService:JSONEncode({ Record = serializedRec, Towers = serializedTowers })
     pcall(function()
         writefile(fileName, fileContent)
         saveConfig()
@@ -473,25 +478,17 @@ function loadMacroFromFile(mName)
         for _, act in ipairs(data.Record) do
             local remoteObj = ReplicatedStorage:FindFirstChild(act.RemoteName, true)
             table.insert(recordedData, {
-                Type = act.Type,
-                Time = act.Time,
-                Remote = remoteObj or ReplicatedStorage,
-                RemoteName = act.RemoteName,
-                Method = act.Method,
-                Args = deserializeVal(act.Args),
-                TowerIndex = act.TowerIndex,
-                TargetIndex = act.TargetIndex,
-                PositionCF = act.PositionCF and deserializeVal(act.PositionCF) or nil
+                Type = act.Type, Time = act.Time, Remote = remoteObj or ReplicatedStorage,
+                RemoteName = act.RemoteName, Method = act.Method, Args = deserializeVal(act.Args),
+                TowerIndex = act.TowerIndex, TargetIndex = act.TargetIndex,
+                PositionCF = act.PositionCF and deserializeVal(act.PositionCF) or nil,
+                EstimatedCost = act.EstimatedCost or 0
             })
         end
         
         for idxStr, tInfo in pairs(data.Towers) do
             local idx = tonumber(idxStr)
-            recordedTowers[idx] = {
-                Index = tInfo.Index,
-                PositionCF = tInfo.PositionCF and deserializeVal(tInfo.PositionCF) or nil,
-                IDs = tInfo.IDs or {}
-            }
+            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and deserializeVal(tInfo.PositionCF) or nil, IDs = tInfo.IDs or {} }
         end
         return true
     end)
@@ -537,7 +534,6 @@ local function getPrimaryID(inst)
     for k, v in pairs(inst:GetAttributes()) do
         if k:lower():find("id") or k:lower():find("uuid") then return tostring(v) end
     end
-    for k, v in pairs(inst:GetAttributes()) do return tostring(v) end
     return inst.Name
 end
 
@@ -595,7 +591,6 @@ local function resolveTargetIndex(args)
             return bestIdx
         end
     end
-
     local cf = getCFrameFromArgs(args)
     if cf then
         local minDist, bestIdx = 999999, 1
@@ -606,17 +601,6 @@ local function resolveTargetIndex(args)
             end
         end
         return bestIdx
-    end
-
-    local extractedStrings = deepExtractStrings(args)
-    for idx, tInfo in pairs(recordedTowers) do
-        if tInfo.IDs then
-            for _, recID in ipairs(tInfo.IDs) do
-                for _, str in ipairs(extractedStrings) do
-                    if str == recID then return idx end
-                end
-            end
-        end
     end
     return 1
 end
@@ -664,7 +648,7 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     return processTable(oldArgs)
 end
 
--- Hook Remote
+-- Hook Remote dengan Filter Cash
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -675,6 +659,16 @@ if not getgenv().MacroHookedTD then
         if isRecording and (method == "FireServer" or method == "InvokeServer") then
             local rName = self.Name
             if rName == "TowerAdd" or rName == "TowerUpgrade" or rName == "TowerSell" then
+                local cashBefore = getPlayerCash()
+                task.wait(0.1) -- Jeda singkat untuk membiarkan server memproses transaksi
+                local cashAfter = getPlayerCash()
+                
+                -- Jika aksi adalah Place atau Upgrade dan cash tidak berkurang, anggap gagal/tidak cukup uang
+                if (rName == "TowerAdd" or rName == "TowerUpgrade") and cashAfter >= cashBefore then
+                    logConsole("[Rec Skip] Gagal (Cash Tidak Cukup): " .. rName)
+                    return oldNamecall(self, ...)
+                end
+
                 task.spawn(function()
                     pcall(function()
                         local timeStamp = tick() - recordStartTime
@@ -683,16 +677,12 @@ if not getgenv().MacroHookedTD then
                             local currentIdx = towerCounter
                             local cf = getCFrameFromArgs(args)
                             
-                            recordedTowers[currentIdx] = {
-                                Index = currentIdx,
-                                PositionCF = cf,
-                                IDs = deepExtractStrings(args)
-                            }
+                            recordedTowers[currentIdx] = { Index = currentIdx, PositionCF = cf, IDs = deepExtractStrings(args) }
                             table.insert(recordedData, {
                                 Type = "ADD", Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf
                             })
-                            logConsole(string.format("[Rec] TowerAdd #%d", currentIdx))
+                            logConsole(string.format("[Rec] TowerAdd #%d Berhasil", currentIdx))
                             
                             task.delay(0.5, function()
                                 local model = findTowerNearPosition(cf)
@@ -709,7 +699,7 @@ if not getgenv().MacroHookedTD then
                                 Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TargetIndex = targetIdx
                             })
-                            logConsole(string.format("[Rec] %s -> Tower #%d", rName, targetIdx))
+                            logConsole(string.format("[Rec] %s -> Tower #%d Berhasil", rName, targetIdx))
                         end
                     end)
                 end)
@@ -730,7 +720,7 @@ recordBtn.MouseButton1Click:Connect(function()
         recordStartTime = tick()
         recordBtn.Text = "Record: ON"
         recordBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        logConsole("RECORDING STARTED...")
+        logConsole("RECORDING STARTED (Cash Filter Active)...")
     else
         recordBtn.Text = "Record: OFF"
         recordBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
@@ -747,7 +737,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED")
+    logConsole("PLAYBACK STARTED (Cash Waiting Guard Active)...")
     
     task.spawn(function()
         local playbackStart = tick()
@@ -763,6 +753,16 @@ function startPlayback()
                 local remoteObj = action.Remote or ReplicatedStorage:FindFirstChild(action.RemoteName, true)
                 local realArgs = deserializeVal(action.Args)
                 
+                -- Sistem Menunggu Cash Cukup Saat Playback
+                if action.Type == "ADD" or action.Type == "UPGRADE" then
+                    local timeout = 0
+                    while isPlaying and getPlayerCash() < 50 and timeout < 30 do -- Cek estimasi minimal atau tunggu sampai uang bertambah
+                        logConsole(string.format("[%d/%d] Menunggu Cash Cukup...", index, #recordedData))
+                        task.wait(1)
+                        timeout = timeout + 1
+                    end
+                end
+
                 if action.Type == "ADD" then
                     local beforeSnapshot = {}
                     for _, v in ipairs(Workspace:GetDescendants()) do
