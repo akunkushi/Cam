@@ -1,4 +1,4 @@
--- Macro TD v25 - Strict Model Exclusion, Scoring Target Fix & Cash Guard
+-- Macro TD v26 - Sequence Target Fix (Absolute Order Index)
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -30,7 +30,6 @@ local elevatorOptions = {
 }
 local currentElevatorIndex = 1
 
--- Helper Mendapatkan Cash Player
 local function getPlayerCash()
     local success, cash = pcall(function()
         if LocalPlayer:FindFirstChild("leaderstats") then
@@ -51,7 +50,6 @@ local function getPlayerCash()
     return success and cash or 999999
 end
 
--- Helper Teleport ke Model Elevator
 local function teleportToElevator(elevatorCode)
     local char = LocalPlayer.Character
     if not char then return end
@@ -72,7 +70,6 @@ local function teleportToElevator(elevatorCode)
     end
 end
 
--- Helper Serialization
 local function serializeVal(v)
     if typeof(v) == "CFrame" then
         return {__type = "CFrame", c = {v:GetComponents()}}
@@ -112,7 +109,6 @@ local function deserializeVal(v)
     end
 end
 
--- GUI Setup
 local function getGuiParent()
     local success, hui = pcall(function() return gethui and gethui() end)
     if success and hui then return hui end
@@ -122,18 +118,18 @@ local function getGuiParent()
 end
 
 local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v25") then
-    guiParent.MacroGameplayGUI_v25:Destroy()
+if guiParent:FindFirstChild("MacroGameplayGUI_v26") then
+    guiParent.MacroGameplayGUI_v26:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v25"
+screenGui.Name = "MacroGameplayGUI_v26"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Size = UDim2.new(0, 360, 0, 35)
-mainFrame.Position = UDim2.new(0, 20, 0.2, -100) -- Posisi Kiri
+mainFrame.Position = UDim2.new(0, 20, 0.2, -100)
 mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
 mainFrame.BorderSizePixel = 0
 mainFrame.Active = true
@@ -148,7 +144,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v25 (Strict Exclude Fix)"
+title.Text = "Macro TD v26 (Sequence Target Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -192,7 +188,6 @@ playBtn.Font = Enum.Font.SourceSansBold
 playBtn.TextSize = 12
 playBtn.Parent = contentFrame
 
--- File Controls
 local nameBox = Instance.new("TextBox")
 nameBox.Size = UDim2.new(0, 160, 0, 28)
 nameBox.Position = UDim2.new(0, 15, 0, 45)
@@ -224,7 +219,6 @@ loadBtn.Font = Enum.Font.SourceSansBold
 loadBtn.TextSize = 12
 loadBtn.Parent = contentFrame
 
--- Elevator Controls UI
 local elevatorSelectBtn = Instance.new("TextButton")
 elevatorSelectBtn.Size = UDim2.new(0, 160, 0, 28)
 elevatorSelectBtn.Position = UDim2.new(0, 15, 0, 80)
@@ -255,7 +249,6 @@ autoPlayBtn.Font = Enum.Font.SourceSansBold
 autoPlayBtn.TextSize = 11
 autoPlayBtn.Parent = contentFrame
 
--- Log Box
 local logFrame = Instance.new("ScrollingFrame")
 logFrame.Size = UDim2.new(0, 330, 0, 250)
 logFrame.Position = UDim2.new(0, 15, 0, 150)
@@ -286,7 +279,6 @@ local function logConsole(msg)
     logFrame.CanvasPosition = Vector2.new(0, logFrame.CanvasSize.Y.Offset)
 end
 
--- Minimize Feature Logic
 local isMinimized = true
 minimizeBtn.MouseButton1Click:Connect(function()
     isMinimized = not isMinimized
@@ -301,7 +293,6 @@ minimizeBtn.MouseButton1Click:Connect(function()
     end
 end)
 
--- Elevator Loop
 elevatorSelectBtn.MouseButton1Click:Connect(function()
     currentElevatorIndex = currentElevatorIndex + 1
     if currentElevatorIndex > #elevatorOptions then currentElevatorIndex = 1 end
@@ -339,7 +330,6 @@ autoElevatorBtn.MouseButton1Click:Connect(function()
     saveConfig()
 end)
 
--- Save / Load Configurations
 function saveConfig()
     if not writefile then return end
     local cfg = {
@@ -406,7 +396,7 @@ saveBtn.MouseButton1Click:Connect(function()
     
     local serializedTowers = {}
     for idx, tInfo in pairs(recordedTowers) do
-        serializedTowers[tostring(idx)] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil, IDs = tInfo.IDs }
+        serializedTowers[tostring(idx)] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil }
     end
     
     local fileContent = HttpService:JSONEncode({ Record = serializedRec, Towers = serializedTowers })
@@ -443,7 +433,7 @@ function loadMacroFromFile(mName)
         
         for idxStr, tInfo in pairs(data.Towers) do
             local idx = tonumber(idxStr)
-            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and deserializeVal(tInfo.PositionCF) or nil, IDs = tInfo.IDs or {} }
+            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and deserializeVal(tInfo.PositionCF) or nil }
         end
         return true
     end)
@@ -461,7 +451,6 @@ loadBtn.MouseButton1Click:Connect(function()
     loadMacroFromFile(nameBox.Text)
 end)
 
--- Solver Helper Lanjutan (Strict Model Identifiers)
 local function getRootFromModel(model)
     if not model then return nil end
     if model:IsA("Model") then
@@ -473,39 +462,6 @@ local function getRootFromModel(model)
         if child:IsA("BasePart") then return child end
     end
     return nil
-end
-
-local function deepExtractStrings(val, list)
-    list = list or {}
-    if type(val) == "string" or type(val) == "number" then
-        table.insert(list, tostring(val))
-    elseif type(val) == "table" then
-        for _, v in pairs(val) do deepExtractStrings(v, list) end
-    end
-    return list
-end
-
-local function extractAllIDsFromModel(inst)
-    if not inst or not inst:IsA("Instance") then return {} end
-    local ids = {inst.Name}
-    for k, v in pairs(inst:GetAttributes()) do
-        if type(v) == "string" or type(v) == "number" then table.insert(ids, tostring(v)) end
-    end
-    for _, child in ipairs(inst:GetDescendants()) do
-        if child:IsA("StringValue") or child:IsA("IntValue") or child:IsA("NumberValue") then 
-            table.insert(ids, tostring(child.Value)) 
-            table.insert(ids, child.Name)
-        end
-    end
-    return ids
-end
-
-local function getPrimaryID(inst)
-    if not inst or not inst:IsA("Instance") then return nil end
-    for k, v in pairs(inst:GetAttributes()) do
-        if k:lower():find("id") or k:lower():find("uuid") then return tostring(v) end
-    end
-    return inst.Name
 end
 
 local function getCFrameFromArgs(args)
@@ -531,7 +487,6 @@ local function getInstanceFromArgs(args)
     return nil
 end
 
--- FIX UTAMA: Pengecualian model (excludeInstances) agar Tower #2 tidak mengambil data Tower #1
 local function findTowerNearPosition(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
@@ -554,120 +509,34 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
-local function resolveTargetIndex(args)
-    -- 1. Cek via Object Reference
+-- LOGIKA SEQUENCE INDEX: Mencari tower terdekat berdasarkan urutan penempatan fisik di map
+local function resolveTargetIndexByPosition(args)
+    local cf = getCFrameFromArgs(args)
     local inst = getInstanceFromArgs(args)
-    if inst then
-        local model = inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model")
-        
-        if model then
-            for idx, tInfo in pairs(recordedTowers) do
-                if tInfo.Instance and (tInfo.Instance == model) then
-                    return idx
-                end
-            end
-        end
-        
-        local root = getRootFromModel(model or inst)
-        if root then
-            local minDist, bestIdx = 999999, 1
-            for idx, tInfo in pairs(recordedTowers) do
-                if tInfo.PositionCF then
-                    local d = (tInfo.PositionCF.Position - root.Position).Magnitude
-                    if d < minDist then minDist = d; bestIdx = idx end
-                end
-            end
-            return bestIdx
-        end
+    local targetPos = nil
+    
+    if cf then targetPos = cf.Position
+    elseif inst then
+        local root = getRootFromModel(inst:IsA("Model") and inst or inst:FindFirstAncestorOfClass("Model") or inst)
+        if root then targetPos = root.Position end
     end
     
-    -- 2. Cek via CFrame Arguments
-    local cf = getCFrameFromArgs(args)
-    if cf then
-        local minDist, bestIdx = 999999, 1
+    if targetPos then
+        local minDist = 999999
+        local bestIdx = 1
         for idx, tInfo in pairs(recordedTowers) do
             if tInfo.PositionCF then
-                local d = (tInfo.PositionCF.Position - cf.Position).Magnitude
-                if d < minDist then minDist = d; bestIdx = idx end
+                local d = (tInfo.PositionCF.Position - targetPos).Magnitude
+                if d < minDist then
+                    minDist = d
+                    bestIdx = idx
+                end
             end
         end
         return bestIdx
     end
     
-    -- 3. Pencocokan ID dengan Sistem Skor
-    local extractedStrings = deepExtractStrings(args)
-    local bestMatchIdx = 1
-    local highestScore = -1
-
-    for idx, tInfo in pairs(recordedTowers) do
-        if tInfo.IDs then
-            local score = 0
-            for _, recID in ipairs(tInfo.IDs) do
-                for _, str in ipairs(extractedStrings) do
-                    if tostring(str) == tostring(recID) then
-                        local strLen = #tostring(str)
-                        if strLen > 10 or tostring(str):match("%-") then
-                            score = score + 100
-                        elseif strLen > 3 then
-                            score = score + 5
-                        else
-                            score = score + 1
-                        end
-                    end
-                end
-            end
-            if score > highestScore then
-                highestScore = score
-                bestMatchIdx = idx
-            end
-        end
-    end
-    
-    if highestScore > 0 then return bestMatchIdx end
     return 1
-end
-
-local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
-    if not newModel then return oldArgs end
-    local newPrimaryID = getPrimaryID(newModel)
-    
-    local function processTable(tbl)
-        local res = {}
-        for k, v in pairs(tbl) do
-            if typeof(v) == "Instance" then
-                if v:IsA("Player") or v == LocalPlayer or (LocalPlayer.Character and v:IsDescendantOf(LocalPlayer.Character)) then
-                    res[k] = v
-                else
-                    res[k] = newModel
-                end
-            elseif type(v) == "string" or type(v) == "number" then
-                local strVal = tostring(v)
-                local replaced = false
-                if recordedIDsList then
-                    for _, oldID in ipairs(recordedIDsList) do
-                        if strVal == tostring(oldID) then
-                            res[k] = newPrimaryID or newModel.Name
-                            replaced = true
-                            break
-                        end
-                    end
-                end
-                if not replaced then
-                    if (strVal:find("-") or #strVal >= 5 or strVal:find("Tower")) and newPrimaryID then
-                        res[k] = newPrimaryID
-                    else
-                        res[k] = v
-                    end
-                end
-            elseif type(v) == "table" then
-                res[k] = processTable(v)
-            else
-                res[k] = v
-            end
-        end
-        return res
-    end
-    return processTable(oldArgs)
 end
 
 -- Hook Remote
@@ -689,44 +558,34 @@ if not getgenv().MacroHookedTD then
                             local currentIdx = towerCounter
                             local cf = getCFrameFromArgs(args)
                             
-                            recordedTowers[currentIdx] = { Index = currentIdx, PositionCF = cf, IDs = deepExtractStrings(args) }
+                            recordedTowers[currentIdx] = { Index = currentIdx, PositionCF = cf }
                             table.insert(recordedData, {
                                 Type = "ADD", Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf
                             })
                             logConsole(string.format("[Rec] TowerAdd #%d", currentIdx))
                             
-                            -- FIX: Pengecualian model & perpanjang delay scan hingga 5 detik
                             task.spawn(function()
                                 local timer = 0
                                 local model = nil
                                 while timer < 5 do
                                     task.wait(0.2)
                                     timer = timer + 0.2
-                                    
                                     local excludeInstances = {}
                                     for k, t in pairs(recordedTowers) do
                                         if k ~= currentIdx and t.Instance then
                                             excludeInstances[t.Instance] = true
                                         end
                                     end
-                                    
                                     model = findTowerNearPosition(cf, excludeInstances)
                                     if model then break end
                                 end
-                                
                                 if model and recordedTowers[currentIdx] then
                                     recordedTowers[currentIdx].Instance = model
-                                    for _, id in ipairs(extractAllIDsFromModel(model)) do
-                                        table.insert(recordedTowers[currentIdx].IDs, id)
-                                    end
-                                    logConsole(string.format("[Rec] Scan Model Tower #%d Sukses", currentIdx))
-                                else
-                                    logConsole(string.format("[Warn] Gagal scan model Tower #%d", currentIdx))
                                 end
                             end)
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
-                            local targetIdx = resolveTargetIndex(args)
+                            local targetIdx = resolveTargetIndexByPosition(args)
                             table.insert(recordedData, {
                                 Type = (rName == "TowerUpgrade" and "UPGRADE" or "SELL"),
                                 Time = timeStamp, Remote = self, Method = method,
@@ -742,7 +601,6 @@ if not getgenv().MacroHookedTD then
     end))
 end
 
--- Controls Logic
 recordBtn.MouseButton1Click:Connect(function()
     if isPlaying then return end
     isRecording = not isRecording
@@ -770,7 +628,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Cash Guard Active)...")
+    logConsole("PLAYBACK STARTED...")
     
     task.spawn(function()
         local playbackStart = tick()
@@ -786,7 +644,6 @@ function startPlayback()
                 local remoteObj = action.Remote or ReplicatedStorage:FindFirstChild(action.RemoteName, true)
                 local realArgs = deserializeVal(action.Args)
                 
-                -- Sistem Menunggu Cash Cukup
                 if action.Type == "ADD" or action.Type == "UPGRADE" then
                     local timeout = 0
                     while isPlaying and getPlayerCash() < 50 and timeout < 30 do
@@ -845,11 +702,20 @@ function startPlayback()
                     
                     if currentModel then
                         task.wait(0.4)
-                        local recInfo = recordedTowers[targetIdx]
-                        local playArgs = rebuildArgsForPlayback(realArgs, recInfo and recInfo.IDs or nil, currentModel)
+                        -- Mengarahkan ulang argumen posisi/target ke model sesi yang sesuai
+                        local targetRoot = getRootFromModel(currentModel)
+                        if targetRoot then
+                            for k, v in pairs(realArgs) do
+                                if typeof(v) == "CFrame" then
+                                    realArgs[k] = targetRoot.CFrame
+                                elseif typeof(v) == "Vector3" then
+                                    realArgs[k] = targetRoot.Position
+                                end
+                            end
+                        end
                         
-                        if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
-                        else remoteObj:FireServer(unpack(playArgs)) end
+                        if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
+                        else remoteObj:FireServer(unpack(realArgs)) end
                         logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
                     else
                         logConsole(string.format("[%d/%d] %s Tower #%d FAIL", index, #recordedData, action.Type, targetIdx))
@@ -877,7 +743,6 @@ playBtn.MouseButton1Click:Connect(function()
     startPlayback()
 end)
 
--- Initial Load Config & Auto Play Execution
 loadConfig()
 logConsole("Macro Ready.")
 
