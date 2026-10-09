@@ -1,4 +1,4 @@
--- Macro TD v34.9 - Safe Rate-Limit Buffer & Precise Targeting Fix
+-- Macro TD v34.9.1 - Fixed Syntax & Safe Rate-Limit Buffer
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -153,7 +153,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.9 (Safe Buffer)"
+title.Text = "Macro TD v34.9.1 (UI Fixed)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -835,7 +835,6 @@ function startPlayback()
                         if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
                         else remoteObj:FireServer(unpack(realArgs)) end
                         
-                        -- Jeda aman anti-spam server
                         task.wait(0.25)
                         
                         local timer = 0
@@ -895,7 +894,6 @@ function startPlayback()
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
                             else remoteObj:FireServer(unpack(playArgs)) end
                             
-                            -- Jeda aman tambahan agar server game memproses upgrade/sell dengan baik
                             task.wait(0.3)
                             
                             successAction = true
@@ -932,7 +930,7 @@ loadConfig()
 logConsole("Macro Ready.")
 
 if autoPlayOnRejoin then
-    task.spawn(function`()
+    task.spawn(function()
         logConsole("Auto Play Rejoin Aktif. Memuat file...")
         task.wait(2)
         if loadMacroFromFile(nameBox.Text) then
