@@ -1,4 +1,4 @@
--- Macro TD v34.16 - Anti-Double Placement & Old File Compatible (With Auto Speed 1.5x & 2x)
+-- Macro TD v34.16 - Anti-Double Placement & Old File Compatible
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -170,30 +170,9 @@ autoPlayBtn.Font = Enum.Font.SourceSansBold
 autoPlayBtn.TextSize = 11
 autoPlayBtn.Parent = contentFrame
 
--- Tombol Game Speed 1.5x & 2x
-local speed15Btn = Instance.new("TextButton")
-speed15Btn.Size = UDim2.new(0, 160, 0, 28)
-speed15Btn.Position = UDim2.new(0, 15, 0, 150)
-speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-speed15Btn.Text = "Speed 1.5x: OFF"
-speed15Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-speed15Btn.Font = Enum.Font.SourceSansBold
-speed15Btn.TextSize = 11
-speed15Btn.Parent = contentFrame
-
-local speed20Btn = Instance.new("TextButton")
-speed20Btn.Size = UDim2.new(0, 160, 0, 28)
-speed20Btn.Position = UDim2.new(0, 185, 0, 150)
-speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-speed20Btn.Text = "Speed 2.0x: OFF"
-speed20Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-speed20Btn.Font = Enum.Font.SourceSansBold
-speed20Btn.TextSize = 11
-speed20Btn.Parent = contentFrame
-
 local logFrame = Instance.new("ScrollingFrame")
-logFrame.Size = UDim2.new(0, 330, 0, 215)
-logFrame.Position = UDim2.new(0, 15, 0, 185)
+logFrame.Size = UDim2.new(0, 330, 0, 250)
+logFrame.Position = UDim2.new(0, 15, 0, 150)
 logFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
 logFrame.BorderSizePixel = 0
 logFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -230,7 +209,7 @@ minimizeBtn.MouseButton1Click:Connect(function()
         minimizeBtn.Text = "+"
     else
         contentFrame.Visible = true
-        mainFrame.Size = UDim2.new(0, 360, 0, 450)
+        mainFrame.Size = UDim2.new(0, 360, 0, 415)
         minimizeBtn.Text = "-"
     end
 end)
@@ -241,9 +220,6 @@ local isPlaying = false
 local autoPlayOnRejoin = false
 local autoElevator = false
 local selectedElevator = "Elevator2"
-
-local speed15Active = false
-local speed20Active = false
 
 local recordedData = {}
 local recordedTowers = {}
@@ -256,54 +232,6 @@ local elevatorOptions = {
     {Name = "Cameraman HQ", Code = "Elevator12"}
 }
 local currentElevatorIndex = 1
-
-local function setGameSpeed(multiplier)
-    pcall(function()
-        local Event = ReplicatedStorage:FindFirstChild("ModuleLoader") 
-            and ReplicatedStorage.ModuleLoader.Shared.Network.RemoteFunction.ChangeSpeed
-        if Event then
-            Event:InvokeServer(multiplier)
-        end
-    end)
-end
-
-speed15Btn.MouseButton1Click:Connect(function()
-    speed15Active = not speed15Active
-    if speed15Active then
-        speed20Active = false
-        speed20Btn.Text = "Speed 2.0x: OFF"
-        speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        speed15Btn.Text = "Speed 1.5x: ON"
-        speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        setGameSpeed(1.5)
-        logConsole("Speed Game diubah ke 1.5x")
-    else
-        speed15Btn.Text = "Speed 1.5x: OFF"
-        speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        setGameSpeed(1)
-        logConsole("Speed Game dikembalikan ke Normal (1x)")
-    end
-    saveConfig()
-end)
-
-speed20Btn.MouseButton1Click:Connect(function()
-    speed20Active = not speed20Active
-    if speed20Active then
-        speed15Active = false
-        speed15Btn.Text = "Speed 1.5x: OFF"
-        speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        speed20Btn.Text = "Speed 2.0x: ON"
-        speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        setGameSpeed(2.0)
-        logConsole("Speed Game diubah ke 2.0x")
-    else
-        speed20Btn.Text = "Speed 2.0x: OFF"
-        speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        setGameSpeed(1)
-        logConsole("Speed Game dikembalikan ke Normal (1x)")
-    end
-    saveConfig()
-end)
 
 local lastValidCash = 500
 local function getPlayerCash()
@@ -440,9 +368,7 @@ function saveConfig()
         autoElevator = autoElevator,
         selectedElevator = selectedElevator,
         elevatorIndex = currentElevatorIndex,
-        selectedMacro = nameBox.Text,
-        speed15 = speed15Active,
-        speed20 = speed20Active
+        selectedMacro = nameBox.Text
     }
     pcall(function()
         writefile(FOLDER_NAME .. "/config.json", HttpService:JSONEncode(cfg))
@@ -460,24 +386,11 @@ function loadConfig()
             currentElevatorIndex = data.elevatorIndex or 1
             if data.selectedMacro then nameBox.Text = data.selectedMacro end
             
-            speed15Active = data.speed15 or false
-            speed20Active = data.speed20 or false
-            
             autoPlayBtn.Text = autoPlayOnRejoin and "Auto Play Rejoin: ON" or "Auto Play Rejoin: OFF"
             autoPlayBtn.BackgroundColor3 = autoPlayOnRejoin and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
             
             autoElevatorBtn.Text = autoElevator and "Auto Elevator: ON" or "Auto Elevator: OFF"
             autoElevatorBtn.BackgroundColor3 = autoElevator and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
-            
-            if speed15Active then
-                speed15Btn.Text = "Speed 1.5x: ON"
-                speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-                setGameSpeed(1.5)
-            elseif speed20Active then
-                speed20Btn.Text = "Speed 2.0x: ON"
-                speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-                setGameSpeed(2.0)
-            end
             
             elevatorSelectBtn.Text = "Map: " .. elevatorOptions[currentElevatorIndex].Name
         end
@@ -939,7 +852,7 @@ function startPlayback()
 
                 if action.Type == "ADD" then
                     local newlySpawnedModel = nil
-                    local hasFired = false
+                    local hasFired = false -- PENCEGAH DOUBLE FIRE REMOTE
                     
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
@@ -953,6 +866,7 @@ function startPlayback()
                             if v:IsA("Model") then beforeSnapshot[v] = true end
                         end
                         
+                        -- Kirim remote HANYA SEKALI SAJA
                         if not hasFired then
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
                             else remoteObj:FireServer(unpack(realArgs)) end
@@ -960,6 +874,7 @@ function startPlayback()
                             task.wait(0.3)
                         end
                         
+                        -- Tunggu model muncul tanpa mengirim ulang remote
                         local timer = 0
                         repeat
                             task.wait(0.1)
