@@ -1,4 +1,4 @@
--- Macro TD v34.22 - Direct Remote Upgrade Verification & Auto Match
+-- Macro TD v34.23 - Server Response Verification for Upgrades
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.22 (Stable Upgrade Fix)"
+title.Text = "Macro TD v34.23 (Server Response Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -874,7 +874,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Stable Upgrade Active)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Server Verification Active)...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -976,21 +976,24 @@ function startPlayback()
                             task.wait(0.2 / selectedSpeed)
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
                             
-                            -- VERIFIKASI LANGSUNG: Kirim remote upgrade/sell dengan aman tanpa pemeriksaan UI cash yang delay
-                            local callSuccess = pcall(function()
+                            -- VERIFIKASI RESPON SERVER: Memastikan server benar-benar menerima dan memproses upgrade
+                            local serverAccepted = true
+                            local invokeSuccess, invokeRes = pcall(function()
                                 if action.Method == "InvokeServer" then 
-                                    remoteObj:InvokeServer(unpack(playArgs))
+                                    local res = remoteObj:InvokeServer(unpack(playArgs))
+                                    -- Jika server mengembalikan nilai false/nil sebagai tanda gagal
+                                    if res == false then serverAccepted = false end
                                 else 
                                     remoteObj:FireServer(unpack(playArgs)) 
                                 end
                             end)
                             
-                            if callSuccess then
+                            if invokeSuccess and serverAccepted then
                                 successAction = true
                                 logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
-                                task.wait(0.3 / selectedSpeed)
+                                task.wait(0.4 / selectedSpeed)
                             else
-                                logConsole(string.format("[%d/%d] %s Tower #%d Gagal, Mencoba Lagi...", index, #recordedData, action.Type, targetIdx))
+                                logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server, Mencoba Lagi...", index, #recordedData, action.Type, targetIdx))
                                 task.wait(1 / selectedSpeed)
                             end
                         else
