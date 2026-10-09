@@ -1,4 +1,4 @@
--- Macro TD v34.19 - Smart Retry Backoff & Stable Upgrade
+-- Macro TD v34.20 - Auto Play on New Match Detection & Stable Upgrade
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.19 (Smart Retry Backoff)"
+title.Text = "Macro TD v34.20 (Auto Match Detector)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -164,7 +164,7 @@ local autoPlayBtn = Instance.new("TextButton")
 autoPlayBtn.Size = UDim2.new(0, 160, 0, 28)
 autoPlayBtn.Position = UDim2.new(0, 15, 0, 115)
 autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-autoPlayBtn.Text = "Auto Play Rejoin: OFF"
+autoPlayBtn.Text = "Auto Play Match: OFF"
 autoPlayBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 autoPlayBtn.Font = Enum.Font.SourceSansBold
 autoPlayBtn.TextSize = 11
@@ -195,7 +195,7 @@ UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 UIListLayout.Padding = UDim.new(0, 2)
 
 local function logConsole(msg)
-    print("[MACRO TD]: " .. msg)
+    print("[MACRO TD]: " + msg)
     local logText = Instance.new("TextLabel")
     logText.Size = UDim2.new(1, -10, 0, 16)
     logText.BackgroundTransparency = 1
@@ -227,7 +227,7 @@ end)
 -- ==================== VARIABEL & LOGIKA UTAMA ====================
 local isRecording = false
 local isPlaying = false
-local autoPlayOnRejoin = false
+local autoPlayMatch = false
 local autoElevator = false
 local selectedElevator = "Elevator2"
 
@@ -397,7 +397,7 @@ end)
 function saveConfig()
     if not writefile then return end
     local cfg = {
-        autoPlay = autoPlayOnRejoin,
+        autoPlayMatch = autoPlayMatch,
         autoElevator = autoElevator,
         selectedElevator = selectedElevator,
         elevatorIndex = currentElevatorIndex,
@@ -414,7 +414,7 @@ function loadConfig()
     pcall(function()
         local data = HttpService:JSONDecode(readfile(FOLDER_NAME .. "/config.json"))
         if data then
-            autoPlayOnRejoin = data.autoPlay or false
+            autoPlayMatch = data.autoPlayMatch or data.autoPlay or false
             autoElevator = data.autoElevator or false
             selectedElevator = data.selectedElevator or "Elevator2"
             currentElevatorIndex = data.elevatorIndex or 1
@@ -427,8 +427,8 @@ function loadConfig()
                 speedBtn.Text = "Speed: " .. speedNames[currentSpeedIndex]
             end
             
-            autoPlayBtn.Text = autoPlayOnRejoin and "Auto Play Rejoin: ON" or "Auto Play Rejoin: OFF"
-            autoPlayBtn.BackgroundColor3 = autoPlayOnRejoin and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
+            autoPlayBtn.Text = autoPlayMatch and "Auto Play Match: ON" or "Auto Play Match: OFF"
+            autoPlayBtn.BackgroundColor3 = autoPlayMatch and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
             
             autoElevatorBtn.Text = autoElevator and "Auto Elevator: ON" or "Auto Elevator: OFF"
             autoElevatorBtn.BackgroundColor3 = autoElevator and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
@@ -439,12 +439,12 @@ function loadConfig()
 end
 
 autoPlayBtn.MouseButton1Click:Connect(function()
-    autoPlayOnRejoin = not autoPlayOnRejoin
-    if autoPlayOnRejoin then
-        autoPlayBtn.Text = "Auto Play Rejoin: ON"
+    autoPlayMatch = not autoPlayMatch
+    if autoPlayMatch then
+        autoPlayBtn.Text = "Auto Play Match: ON"
         autoPlayBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
     else
-        autoPlayBtn.Text = "Auto Play Rejoin: OFF"
+        autoPlayBtn.Text = "Auto Play Match: OFF"
         autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
     end
     saveConfig()
@@ -874,7 +874,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Smart Retry Active)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. ")...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -980,7 +980,6 @@ function startPlayback()
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
                             else remoteObj:FireServer(unpack(playArgs)) end
                             
-                            -- Berikan waktu tunggu yang cukup agar server merespons
                             task.wait(0.5)
                             local cashAfterPlay = getPlayerCash()
                             
@@ -991,7 +990,6 @@ function startPlayback()
                                 successAction = true
                                 logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
                             else
-                                -- SMART RETRY BACKOFF: Tunggu lebih lama (1.5 detik) jika ditolak server agar tidak spam/rate-limit
                                 logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server, Menunggu Cooldown...", index, #recordedData, action.Type, targetIdx))
                                 task.wait(1.5)
                             end
@@ -1023,15 +1021,40 @@ playBtn.MouseButton1Click:Connect(function()
     startPlayback()
 end)
 
+-- FITUR AUTO PLAY MATCH BARU (Mendeteksi match/replay baru secara otomatis)
+task.spawn(function()
+    while true do
+        task.wait(3)
+        if autoPlayMatch and not isPlaying then
+            local matchStarted = false
+            pcall(function()
+                local pg = LocalPlayer:FindFirstChild("PlayerGui")
+                if pg then
+                    for _, gui in ipairs(pg:GetDescendants()) do
+                        if gui:IsA("TextLabel") then
+                            local txt = gui.Text:lower()
+                            -- Mendeteksi teks indikator permainan baru (misal: Wave 1, Wave started, dll)
+                            if txt:find("wave 1") or txt:find("wave started") or txt:find("toilets:") then
+                                matchStarted = true
+                                break
+                            end
+                        end
+                    end
+                end
+            end)
+            
+            if matchStarted then
+                logConsole("Match/Replay baru terdeteksi! Memuat makro otomatis...")
+                task.wait(2) -- Jeda stabilisasi awal match
+                if loadMacroFromFile(nameBox.Text) then
+                    startPlayback()
+                    -- Jeda agar tidak mendeteksi match yang sama berulang kali dalam satu sesi
+                    task.wait(15)
+                end
+            end
+        end
+    end
+end)
+
 loadConfig()
 logConsole("Macro Ready.")
-
-if autoPlayOnRejoin then
-    task.spawn(function()
-        logConsole("Auto Play Rejoin Aktif. Memuat file...")
-        task.wait(2)
-        if loadMacroFromFile(nameBox.Text) then
-            startPlayback()
-        end
-    end)
-end
