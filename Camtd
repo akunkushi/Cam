@@ -1,4 +1,4 @@
--- Macro TD v34.4 - UI Fixed, Smart Filtered Recording & Delete Macro
+-- Macro TD v34.5 - Accurate Tower Targeting Fix, Smart Filtered Recording & Delete Macro
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -153,7 +153,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.4 (UI Fixed & Filtered)"
+title.Text = "Macro TD v34.5 (Accurate Targeting)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -514,6 +514,21 @@ local function getCFrameFromArgs(args)
     return nil
 end
 
+local function getTowerFromArgs(args)
+    for _, v in pairs(args) do
+        if typeof(v) == "Instance" and (v:IsA("Model") or v:IsA("BasePart")) then
+            if v ~= LocalPlayer.Character and not v:IsDescendantOf(LocalPlayer.Character) then
+                if v:IsA("BasePart") then return v.Parent end
+                return v
+            end
+        elseif type(v) == "table" then
+            local found = getTowerFromArgs(v)
+            if found then return found end
+        end
+    end
+    return nil
+end
+
 local function extractAllIDsFromModel(inst)
     if not inst or not inst:IsA("Instance") then return {} end
     local ids = {inst.Name}
@@ -556,27 +571,39 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
-local function resolveTargetIndexByPlayerProximity()
-    local char = LocalPlayer.Character
-    if not char then return 1 end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return 1 end
-    
-    local playerPos = root.Position
-    local minDist = 999999
-    local bestIdx = 1
+-- Mencari index tower berdasarkan model asli yang di-upgrade/sell (Akurat 100%)
+local function resolveTargetIndexByModel(targetModel)
+    if not targetModel then return 1 end
+    local targetRoot = getRootFromModel(targetModel)
+    local targetPos = targetRoot and targetRoot.Position or (targetModel.PrimaryPart and targetModel.PrimaryPart.Position)
     
     for idx, tInfo in pairs(recordedTowers) do
-        if tInfo.PositionCF then
-            local dist = (tInfo.PositionCF.Position - playerPos).Magnitude
-            if dist < minDist then
-                minDist = dist
-                bestIdx = idx
+        if tInfo.PositionCF and targetPos then
+            local dist = (tInfo.PositionCF.Position - targetPos).Magnitude
+            if dist < 4 then -- Jarak 4 stud sangat aman untuk mencocokkan tower yang sama
+                return idx
             end
         end
     end
     
-    return bestIdx
+    -- Fallback ke proximity jika tidak ketemu
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if root and targetPos then
+        local minDist = 999999
+        local bestIdx = 1
+        for idx, tInfo in pairs(recordedTowers) do
+            if tInfo.PositionCF then
+                local dist = (tInfo.PositionCF.Position - targetPos).Magnitude
+                if dist < minDist then
+                    minDist = dist
+                    bestIdx = idx
+                end
+            end
+        end
+        return bestIdx
+    end
+    return 1
 end
 
 local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
@@ -627,7 +654,7 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     return processTable(oldArgs)
 end
 
--- Hook Remote Aman & Asinkron (Menjamin UI tidak lag/error)
+-- Hook Remote dengan Deteksi Target Akurat & Filter Otomatis
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -658,7 +685,6 @@ if not getgenv().MacroHookedTD then
                             
                             recordedTowers[currentIdx] = { Index = currentIdx, PositionCF = cf, IDs = {} }
                             
-                            -- Masukkan sementara ke rekaman
                             local actionEntry = {
                                 Type = "ADD", Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = 150
@@ -671,13 +697,11 @@ if not getgenv().MacroHookedTD then
                             local cost = cashBefore - cashAfter
                             local model = findTowerNearPosition(cf)
                             
-                            -- Verifikasi apakah sukses (uang berkurang atau model spawn)
                             if (cost > 0 and cost < 100000) or model then
                                 if cost > 0 and cost < 100000 then actionEntry.CashCost = cost end
                                 if model then recordedTowers[currentIdx].IDs = extractAllIDsFromModel(model) end
                                 logConsole(string.format("[Rec] TowerAdd #%d Sukses (Cost: %d)", currentIdx, actionEntry.CashCost))
                             else
-                                -- Jika gagal, hapus dari data rekaman
                                 table.remove(recordedData, entryIndex)
                                 recordedTowers[currentIdx] = nil
                                 towerCounter = towerCounter - 1
@@ -685,7 +709,8 @@ if not getgenv().MacroHookedTD then
                             end
                             
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
-                            local targetIdx = resolveTargetIndexByPlayerProximity()
+                            local targetModel = getTowerFromArgs(args)
+                            local targetIdx = resolveTargetIndexByModel(targetModel)
                             local actionType = (rName == "TowerUpgrade" and "UPGRADE" or "SELL")
                             local targetIDs = recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs or nil
                             
