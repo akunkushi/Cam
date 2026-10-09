@@ -1,4 +1,4 @@
--- Macro TD v34.40 - Strict Success Recording Filter
+-- Macro TD v34.41 - Robust Upgrade & Sell Playback Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -21,12 +21,12 @@ end)
 
 -- ==================== UI PEMBUATAN UTAMA ====================
 local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-if playerGui:FindFirstChild("MacroGameplayGUI_v40") then
-    playerGui.MacroGameplayGUI_v40:Destroy()
+if playerGui:FindFirstChild("MacroGameplayGUI_v41") then
+    playerGui.MacroGameplayGUI_v41:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v40"
+screenGui.Name = "MacroGameplayGUI_v41"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = playerGui
 
@@ -47,7 +47,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v40 (Strict Success Filter)"
+title.Text = "Macro TD v41 (Robust Playback)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -468,7 +468,7 @@ saveBtn.MouseButton1Click:Connect(function()
     pcall(function()
         writefile(fileName, fileContent)
         saveConfig()
-        logConsole("Berhasil Save: " .. nameBox.Text .. " (Total Aksi Valid: " .. #recordedData .. ")")
+        logConsole("Berhasil Save: " .. nameBox.Text .. " (Total Aksi: " .. #recordedData .. ")")
     end)
 end)
 
@@ -643,9 +643,11 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     return 1
 end
 
-local function rebuildArgsForPlaybackWithDynamicId(oldArgs, newModel)
+-- PEREKONSTRUKSI ARGUMEN TEPAT UNTUK PLAYBACK
+local function rebuildArgsForPlayback(oldArgs, newModel)
     if not newModel then return oldArgs end
     
+    -- Ambil runtime ID (UUID) dari model baru jika ada
     local runtimeId = nil
     for _, attrName in ipairs(newModel:GetAttributeList()) do
         local val = newModel:GetAttribute(attrName)
@@ -694,7 +696,7 @@ local function rebuildArgsForPlaybackWithDynamicId(oldArgs, newModel)
     end
 end
 
--- HOOK RECORDING DENGAN FILTER SUKSES KETAT
+-- HOOK PEREKAMAN (RECORDING)
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -710,16 +712,14 @@ if not getgenv().MacroHookedTD then
                         local timeStamp = tick() - recordStartTime
                         local cashBefore = getPlayerCash()
                         
-                        -- Biarkan remote tereksekusi duluan di game
                         task.wait(0.35)
                         local cashAfter = getPlayerCash()
-                        local cashDiff = cashBefore - cashAfter -- Positif jika berkurang (beli/upgrade), Negatif jika bertambah (sell)
+                        local cashDiff = cashBefore - cashAfter
                         
                         if rName == "TowerAdd" then
                             local cf = getCFrameFromArgs(args)
                             local newlySpawnedModel = findTowerNearPosition(cf)
                             
-                            -- Validasi sukses: Cash berkurang atau model tower benar-benar muncul di map
                             if (cashDiff > 0 and cashDiff < 100000) or newlySpawnedModel then
                                 towerCounter = towerCounter + 1
                                 local currentIdx = towerCounter
@@ -740,12 +740,9 @@ if not getgenv().MacroHookedTD then
                                 }
                                 table.insert(recordedData, actionEntry)
                                 logConsole(string.format("[Rec Valid] TowerAdd #%d (Sukses)", currentIdx))
-                            else
-                                logConsole("[Rec Filter] TowerAdd Gagal/Ditolak Server (Tidak Direkam)")
                             end
                             
                         elseif rName == "TowerUpgrade" then
-                            -- Validasi sukses: Cash berkurang (artinya upgrade berhasil dibayar)
                             if cashDiff > 0 and cashDiff < 100000 then
                                 local targetModel = getTowerFromArgs(args)
                                 local targetIdx = resolveTargetIndex(args, targetModel, nil)
@@ -757,12 +754,9 @@ if not getgenv().MacroHookedTD then
                                 }
                                 table.insert(recordedData, actionEntry)
                                 logConsole(string.format("[Rec Valid] UPGRADE Tower #%d (Cost: %d)", targetIdx, cashDiff))
-                            else
-                                logConsole("[Rec Filter] UPGRADE Gagal/Ditolak Server (Tidak Direkam)")
                             end
                             
                         elseif rName == "TowerSell" then
-                            -- Validasi sukses: Cash bertambah (artinya sell berhasil)
                             if cashDiff < 0 then
                                 local targetModel = getTowerFromArgs(args)
                                 local targetIdx = resolveTargetIndex(args, targetModel, nil)
@@ -775,8 +769,6 @@ if not getgenv().MacroHookedTD then
                                 }
                                 table.insert(recordedData, actionEntry)
                                 logConsole(string.format("[Rec Valid] SELL Tower #%d (Earn: %d)", targetIdx, earnedCash))
-                            else
-                                logConsole("[Rec Filter] SELL Gagal/Ditolak Server (Tidak Direkam)")
                             end
                         end
                     end)
@@ -797,7 +789,7 @@ recordBtn.MouseButton1Click:Connect(function()
         recordStartTime = tick()
         recordBtn.Text = "Record: ON"
         recordBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        logConsole("RECORDING STARTED (Strict Filter)...")
+        logConsole("RECORDING STARTED...")
     else
         recordBtn.Text = "Record: OFF"
         recordBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
@@ -805,6 +797,7 @@ recordBtn.MouseButton1Click:Connect(function()
     end
 end)
 
+-- PEMUTARAN ULANG (PLAYBACK) YANG DIOPTIMALKAN
 function startPlayback()
     if #recordedData == 0 then
         logConsole("Data rekaman kosong!")
@@ -839,8 +832,7 @@ function startPlayback()
                     
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
-                            logConsole(string.format("[%d/%d] Menunggu Cash Place (Butuh: %d | Cash: %d)...", index, #recordedData, requiredCost, getPlayerCash()))
-                            task.wait(1 / selectedSpeed)
+                            task.wait(0.5 / selectedSpeed)
                         end
                         if not isPlaying then return end
 
@@ -853,7 +845,7 @@ function startPlayback()
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
                             else remoteObj:FireServer(unpack(realArgs)) end
                             hasFired = true
-                            task.wait(0.3 / selectedSpeed)
+                            task.wait(0.2 / selectedSpeed)
                         end
                         
                         local timer = 0
@@ -874,67 +866,44 @@ function startPlayback()
                             for _, t in pairs(sessionTowers) do excludeInstances[t] = true end
                             newlySpawnedModel = findTowerNearPosition(action.PositionCF, excludeInstances)
                         end
-                        
-                        if not newlySpawnedModel then
-                            logConsole(string.format("[%d/%d] PLACE Tower #%d Menunggu Model...", index, #recordedData, action.TowerIndex or action.TargetIndex))
-                            task.wait(0.5 / selectedSpeed)
-                        end
                     until newlySpawnedModel or not isPlaying
 
                     if newlySpawnedModel then
                         local tIdx = action.TowerIndex or action.TargetIndex or 1
                         sessionTowers[tIdx] = newlySpawnedModel
-                        task.wait(0.3)
+                        task.wait(0.2)
                         logConsole(string.format("[%d/%d] PLACE Tower #%d OK", index, #recordedData, tIdx))
                     end
 
                 elseif action.Type == "UPGRADE" or action.Type == "SELL" then
                     local targetIdx = action.TargetIndex or action.TowerIndex or 1
+                    local currentModel = sessionTowers[targetIdx]
                     
-                    local successAction = false
-                    local retryCount = 0
-                    repeat
-                        while isPlaying and action.Type == "UPGRADE" and getPlayerCash() < requiredCost do
-                            logConsole(string.format("[%d/%d] Menunggu Cash UPGRADE (Butuh: %d | Cash: %d)...", index, #recordedData, requiredCost, getPlayerCash()))
-                            task.wait(1 / selectedSpeed)
+                    if not currentModel or not currentModel.Parent then
+                        if recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
+                            currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF)
+                        elseif action.PositionCF then
+                            currentModel = findTowerNearPosition(action.PositionCF)
                         end
-                        if not isPlaying then return end
-
-                        local currentModel = sessionTowers[targetIdx]
-                        if not currentModel or not currentModel.Parent then
-                            if recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
-                                currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF)
-                            elseif action.PositionCF then
-                                currentModel = findTowerNearPosition(action.PositionCF)
-                            else
-                                local cfFromArgs = getCFrameFromArgs(realArgs)
-                                if cfFromArgs then
-                                    currentModel = findTowerNearPosition(cfFromArgs)
-                                end
-                            end
-                        end
+                    end
+                    
+                    if currentModel then
+                        task.wait(0.1 / selectedSpeed)
+                        local playArgs = rebuildArgsForPlayback(realArgs, currentModel)
                         
-                        if currentModel then
-                            task.wait(0.2 / selectedSpeed)
-                            local playArgs = rebuildArgsForPlaybackWithDynamicId(realArgs, currentModel)
-                            
-                            pcall(function()
-                                if action.Method == "InvokeServer" then 
-                                    remoteObj:InvokeServer(unpack(playArgs))
-                                else 
-                                    remoteObj:FireServer(unpack(playArgs)) 
-                                end
-                            end)
-                            
-                            task.wait(0.5 / selectedSpeed)
-                            successAction = true
-                            logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
-                        else
-                            retryCount = retryCount + 1
-                            logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada (Retry #%d)...", index, #recordedData, targetIdx, retryCount))
-                            task.wait(0.5 / selectedSpeed)
-                        end
-                    until successAction or not isPlaying or retryCount > 15
+                        pcall(function()
+                            if action.Method == "InvokeServer" then 
+                                remoteObj:InvokeServer(unpack(playArgs))
+                            else 
+                                remoteObj:FireServer(unpack(playArgs)) 
+                            end
+                        end)
+                        
+                        task.wait(0.3 / selectedSpeed)
+                        logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
+                    else
+                        logConsole(string.format("[%d/%d] %s Tower #%d Gagal (Model Tidak Ditemukan)", index, #recordedData, action.Type, targetIdx))
+                    end
                 end
             end)
         end
