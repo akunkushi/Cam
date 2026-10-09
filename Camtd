@@ -1,4 +1,4 @@
--- Macro TD v34.6 - Precise Close-Distance Tower Targeting Fix
+-- Macro TD v34.7 - Precise Close-Distance Tower Targeting & Instance Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -104,7 +104,8 @@ local function deserializeVal(v)
         elseif v.__type == "Vector3" then
             return Vector3.new(v.x, v.y, v.z)
         elseif v.__type == "Instance" then
-            return nil
+            -- Mempertahankan instance sebagai placeholder agar bisa direkonstruksi saat playback
+            return {__isSerializedInstance = true, name = v.name, className = v.className}
         else
             local res = {}
             for k, val in pairs(v) do
@@ -153,9 +154,9 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.6 (Precise Targeting)"
+title.Text = "Macro TD v34.7 (Precise Target Fixed)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
-title.TextSize = 13
+title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = mainFrame
@@ -571,18 +572,16 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
--- PERBAIKAN UTAMA: Pencocokan Indeks Berdasarkan Instance Langsung & Jarak Terdekat Mutlak (Minimum Distance)
+-- Pencocokan Indeks Tower Berdasarkan Referensi Model Langsung
 local function resolveTargetIndexByModel(targetModel)
     if not targetModel then return 1 end
     
-    -- 1. Cocokkan berdasarkan referensi objek model fisik secara langsung (Akurat 100% untuk tower berdekatan)
     for idx, tInfo in pairs(recordedTowers) do
         if tInfo.Model and tInfo.Model == targetModel then
             return idx
         end
     end
     
-    -- 2. Jika tidak ketemu persis, hitung jarak mutlak terdekat (Minimum Distance) ke semua tower
     local targetRoot = getRootFromModel(targetModel)
     local targetPos = targetRoot and targetRoot.Position or (targetModel.PrimaryPart and targetModel.PrimaryPart.Position)
     if not targetPos and targetModel:IsA("BasePart") then
@@ -607,6 +606,7 @@ local function resolveTargetIndexByModel(targetModel)
     return 1
 end
 
+-- Rekonstruksi Argumen untuk Playback dengan Penggantian Instance yang Akurat
 local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     if not newModel then return oldArgs end
     local newPrimaryID = getPrimaryID(newModel)
@@ -615,7 +615,9 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     local function processTable(tbl)
         local res = {}
         for k, v in pairs(tbl) do
-            if typeof(v) == "Instance" then
+            if type(v) == "table" and v.__isSerializedInstance then
+                res[k] = newModel
+            elseif typeof(v) == "Instance" then
                 if v:IsA("Player") or v == LocalPlayer or (LocalPlayer.Character and v:IsDescendantOf(LocalPlayer.Character)) then
                     res[k] = v
                 else
@@ -655,7 +657,7 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     return processTable(oldArgs)
 end
 
--- Hook Remote dengan Penyimpanan Model Referensi Asli
+-- Hook Remote dengan Deteksi Target Akurat & Penyimpanan Model Instance
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -685,7 +687,6 @@ if not getgenv().MacroHookedTD then
                                 cf = newlySpawnedModel:GetPivot()
                             end
                             
-                            -- Simpan referensi model asli ke recordedTowers
                             recordedTowers[currentIdx] = { 
                                 Index = currentIdx, 
                                 PositionCF = cf, 
