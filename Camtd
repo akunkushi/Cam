@@ -1,4 +1,4 @@
--- Macro TD v34.11 - Verified Playback Upgrade/Sell & Priority UI
+-- Macro TD v34.12 - Fixed Cash Reader & Verified Playback
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.11 (Verified Playback)"
+title.Text = "Macro TD v34.12 (Cash Reader Fixed)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -233,7 +233,8 @@ local elevatorOptions = {
 }
 local currentElevatorIndex = 1
 
-local lastValidCash = 200
+local lastValidCash = 500
+-- PERBAIKAN TOTAL PADA FUNGSI PEMBACA CASH AGAR TIDAK SALAH BACA LABEL LAIN
 local function getPlayerCash()
     local success, cash = pcall(function()
         if LocalPlayer:FindFirstChild("leaderstats") then
@@ -248,11 +249,15 @@ local function getPlayerCash()
         if pg then
             for _, gui in ipairs(pg:GetDescendants()) do
                 if gui:IsA("TextLabel") then
+                    local nameLower = gui.Name:lower()
                     local text = gui.Text
-                    local num = tonumber(text:gsub("[^%d]", ""))
-                    if num and num > 0 and num < 10000000 and (gui.Name:lower():find("cash") or gui.Name:lower():find("money") or gui.Name:lower():find("coin") or text:find("$")) then
-                        lastValidCash = num
-                        return num
+                    -- Hanya ambil label yang namanya mengandung indikator uang/cash spesifik
+                    if nameLower:find("cash") or nameLower:find("money") or nameLower:find("coin") or nameLower:find("balance") then
+                        local num = tonumber(text:gsub("[^%d]", ""))
+                        if num and num >= 0 and num < 10000000 then
+                            lastValidCash = num
+                            return num
+                        end
                     end
                 end
             end
@@ -810,7 +815,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Verified Playback Active)...")
+    logConsole("PLAYBACK STARTED (Fixed Cash Reader Active)...")
     
     task.spawn(function()
         local playbackStart = tick()
@@ -907,7 +912,6 @@ function startPlayback()
                             task.wait(0.35)
                             local cashAfterPlay = getPlayerCash()
                             
-                            -- VERIFIKASI NYATA: Cek apakah uang benar-benar berubah (berkurang untuk upgrade, bertambah untuk sell)
                             if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
                                 successAction = true
                                 logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE", index, #recordedData, targetIdx))
