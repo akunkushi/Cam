@@ -1,4 +1,4 @@
--- Macro TD v34.2 - Filtered Successful Recording, Auto-Retry & Delete Macro
+-- Macro TD v34.3 - Fixed UI Syntax Error, Filtered Recording & Auto-Retry
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -153,7 +153,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.2 (Smart Filtered Rec)"
+title.Text = "Macro TD v34.3 (Fixed)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -649,7 +649,7 @@ if not getgenv().MacroHookedTD then
                     end
                     
                     task.spawn(function()
-                        task.wait(0.4) -- Berikan waktu sebentar untuk respons server & spawn
+                        task.wait(0.4)
                         local cashAfter = getPlayerCash()
                         local cost = cashBefore - cashAfter
                         
@@ -667,7 +667,6 @@ if not getgenv().MacroHookedTD then
                             newlySpawnedModel = findTowerNearPosition(cf)
                         end
                         
-                        -- Verifikasi: Dianggap sukses jika uang berkurang atau model berhasil spawn
                         if newlySpawnedModel or (cost > 0 and cost < 100000) then
                             towerCounter = towerCounter + 1
                             local currentIdx = towerCounter
@@ -697,7 +696,7 @@ if not getgenv().MacroHookedTD then
                     task.spawn(function()
                         task.wait(0.4)
                         local cashAfter = getPlayerCash()
-                        local cost = cashBefore - cashAfter -- Upgrade mengurangi uang (>0), Sell menambah uang (<0)
+                        local cost = cashBefore - cashAfter
                         
                         local isSuccess = false
                         local actionType = (rName == "TowerUpgrade" and "UPGRADE" or "SELL")
@@ -834,7 +833,7 @@ function startPlayback()
 
                         local currentModel = sessionTowers[targetIdx]
                         if not currentModel and recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
-                            let excludeInstances = {}
+                            local excludeInstances = {} -- DIPERBAIKI: Menggunakan 'local' bukan 'let'
                             for k, t in pairs(sessionTowers) do 
                                 if k ~= targetIdx then excludeInstances[t] = true end 
                             end
