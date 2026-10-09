@@ -1,4 +1,4 @@
--- Macro TD v34.23 - Server Response Verification for Upgrades
+-- Macro TD v34.24 - Real Cash Verification for Upgrades & Auto Match
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.23 (Server Response Fix)"
+title.Text = "Macro TD v34.24 (Real Cash Verification)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -874,7 +874,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Server Verification Active)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Real Cash Verification Active)...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -951,6 +951,7 @@ function startPlayback()
                     local targetIdx = action.TargetIndex or action.TowerIndex or 1
                     
                     local successAction = false
+                    local retryCount = 0
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
                             logConsole(string.format("[%d/%d] Menunggu Cash %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
@@ -974,33 +975,35 @@ function startPlayback()
                         
                         if currentModel then
                             task.wait(0.2 / selectedSpeed)
+                            local cashBeforePlay = getPlayerCash()
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
                             
-                            -- VERIFIKASI RESPON SERVER: Memastikan server benar-benar menerima dan memproses upgrade
-                            local serverAccepted = true
-                            local invokeSuccess, invokeRes = pcall(function()
-                                if action.Method == "InvokeServer" then 
-                                    local res = remoteObj:InvokeServer(unpack(playArgs))
-                                    -- Jika server mengembalikan nilai false/nil sebagai tanda gagal
-                                    if res == false then serverAccepted = false end
-                                else 
-                                    remoteObj:FireServer(unpack(playArgs)) 
-                                end
-                            end)
+                            if action.Method == "InvokeServer" then 
+                                remoteObj:InvokeServer(unpack(playArgs))
+                            else 
+                                remoteObj:FireServer(unpack(playArgs)) 
+                            end
                             
-                            if invokeSuccess and serverAccepted then
+                            -- VERIFIKASI NYATA: Tunggu sebentar dan cek apakah cash berkurang (untuk upgrade) atau bertambah (untuk sell)
+                            task.wait(0.5 / selectedSpeed)
+                            local cashAfterPlay = getPlayerCash()
+                            
+                            if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
                                 successAction = true
-                                logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
-                                task.wait(0.4 / selectedSpeed)
+                                logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE", index, #recordedData, targetIdx))
+                            elseif action.Type == "SELL" and cashBeforePlay < cashAfterPlay then
+                                successAction = true
+                                logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
                             else
-                                logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server, Mencoba Lagi...", index, #recordedData, action.Type, targetIdx))
+                                retryCount = retryCount + 1
+                                logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server (Coba Lagi #%d)...", index, #recordedData, action.Type, targetIdx, retryCount))
                                 task.wait(1 / selectedSpeed)
                             end
                         else
                             logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
                             task.wait(0.5 / selectedSpeed)
                         end
-                    until successAction or not isPlaying
+                    until successAction or not isPlaying or retryCount > 15
                 end
             end)
         end
