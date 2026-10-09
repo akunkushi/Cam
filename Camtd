@@ -1,4 +1,4 @@
--- Macro TD v34.34 - UI Syntax Fix
+-- Macro TD v34.35 - Mobile UI Fix (PlayerGui Direct)
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -19,24 +19,16 @@ pcall(function()
     end
 end)
 
--- ==================== UI PEMBUATAN UTAMA ====================
-local function getGuiParent()
-    local success, hui = pcall(function() return gethui and gethui() end)
-    if success and hui then return hui end
-    local successCore, coreGui = pcall(function() return game:GetService("CoreGui") end)
-    if successCore and coreGui then return coreGui end
-    return LocalPlayer:WaitForChild("PlayerGui")
-end
-
-local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v34") then
-    guiParent.MacroGameplayGUI_v34:Destroy()
+-- ==================== UI PEMBUATAN UTAMA (MOBILE SAFE) ====================
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+if playerGui:FindFirstChild("MacroGameplayGUI_v35") then
+    playerGui.MacroGameplayGUI_v35:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v34"
+screenGui.Name = "MacroGameplayGUI_v35"
 screenGui.ResetOnSpawn = false
-screenGui.Parent = guiParent
+screenGui.Parent = playerGui
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Size = UDim2.new(0, 360, 0, 35)
@@ -55,7 +47,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.34 (UI Fixed)"
+title.Text = "Macro TD v34.35 (UI Mobile Fixed)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -225,6 +217,7 @@ minimizeBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ==================== VARIABEL & LOGIKA UTAMA ====================
+local jenisRecording = false
 local isRecording = false
 local isPlaying = false
 local autoPlayMatch = false
@@ -968,7 +961,7 @@ task.spawn(function()
                 if pg then
                     for _, gui in ipairs(pg:GetDescendants()) do
                         if gui:IsA("TextLabel") or gui:IsA("TextButton") then
-                            local txt = gui.Text:lower() -- Diperbaiki dari 'let' menjadi 'local'
+                            local txt = gui.Text:lower()
                             if txt:find("wave") or txt:find("toilet") or txt:find("units:") or txt:find("completed") then
                                 matchStarted = true
                                 break
