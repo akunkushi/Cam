@@ -1,4 +1,4 @@
--- Macro TD v34.25 - Forced Tower Reference & Stable Upgrade Fix
+-- Macro TD v34.26 - Entity Sync & Stable Upgrade Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.25 (Upgrade Ref Fix)"
+title.Text = "Macro TD v34.26 (Entity Sync Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -697,52 +697,25 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     return 1
 end
 
--- DIPERBARUI: Memaksa argumen upgrade menggunakan model tower aktif saat ini
+-- Rekonstruksi argumen secara aman tanpa merusak struktur tabel asli
 local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     if not newModel then return oldArgs end
-    local newPrimaryID = getPrimaryID(newModel)
-    local targetRoot = getRootFromModel(newModel)
     
     local function processTable(tbl)
         local res = {}
         for k, v in pairs(tbl) do
-            if type(v) == "table" and v.__isSerializedInstance then
-                res[k] = newModel
+            if type(v) == "table" then
+                if v.__isSerializedInstance then
+                    res[k] = newModel
+                else
+                    res[k] = processTable(v)
+                end
             elseif typeof(v) == "Instance" then
                 if v:IsA("Player") or v == LocalPlayer or (LocalPlayer.Character and v:IsDescendantOf(LocalPlayer.Character)) then
                     res[k] = v
                 else
                     res[k] = newModel
                 end
-            elseif typeof(v) == "CFrame" and targetRoot then
-                res[k] = targetRoot.CFrame
-            elseif typeof(v) == "Vector3" and targetRoot then
-                res[k] = targetRoot.Position
-            elseif type(v) == "string" or type(v) == "number" then
-                local strVal = tostring(v)
-                if type(v) == "number" and v < 10 then
-                    res[k] = v
-                else
-                    local replaced = false
-                    if recordedIDsList and #recordedIDsList > 0 then
-                        for _, oldID in ipairs(recordedIDsList) do
-                            if strVal == tostring(oldID) and #strVal > 3 then
-                                res[k] = newModel -- Memastikan model diganti langsung
-                                replaced = true
-                                break
-                            end
-                        end
-                    end
-                    if not replaced then
-                        if (strVal:find("-") or #strVal >= 5 or strVal:find("Tower")) then
-                            res[k] = newModel -- Memaksa referensi ke model aktif
-                        else
-                            res[k] = v
-                        end
-                    end
-                end
-            elseif type(v) == "table" then
-                res[k] = processTable(v)
             else
                 res[k] = v
             end
@@ -750,12 +723,18 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
         return res
     end
     
-    local finalArgs = processTable(oldArgs)
-    -- Memastikan argumen pertama jika berupa nilai tunggal/tabel langsung merujuk ke newModel
-    if type(finalArgs) == "table" and #finalArgs == 0 then
-        finalArgs[1] = newModel
+    if type(oldArgs) == "table" then
+        local newArgs = processTable(oldArgs)
+        -- Pastikan argumen utama (index 1 jika berupa array) mengarah ke model aktif
+        if #newArgs > 0 then
+            newArgs[1] = newModel
+        else
+            newArgs[1] = newModel
+        end
+        return newArgs
+    else
+        return {newModel}
     end
-    return finalArgs
 end
 
 if not getgenv().MacroHookedTD then
@@ -881,7 +860,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Forced Ref Active)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Entity Sync Active)...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -951,6 +930,8 @@ function startPlayback()
                     if newlySpawnedModel then
                         local tIdx = action.TowerIndex or action.TargetIndex or 1
                         sessionTowers[tIdx] = newlySpawnedModel
+                        -- JEDA SINKRONISASI: Memastikan server selesai mendaftarkan entitas tower baru
+                        task.wait(0.4) 
                         logConsole(string.format("[%d/%d] PLACE Tower #%d OK", index, #recordedData, tIdx))
                     end
 
@@ -984,13 +965,6 @@ function startPlayback()
                             task.wait(0.2 / selectedSpeed)
                             local cashBeforePlay = getPlayerCash()
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
-                            
-                            -- Memastikan argumen utama berisi model aktif saat ini
-                            if type(playArgs) == "table" then
-                                playArgs[1] = currentModel
-                            else
-                                playArgs = {currentModel}
-                            end
                             
                             if action.Method == "InvokeServer" then 
                                 remoteObj:InvokeServer(unpack(playArgs))
