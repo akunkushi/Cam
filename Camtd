@@ -1,123 +1,25 @@
--- Macro TD v34.9.1 - Fixed Syntax & Safe Rate-Limit Buffer
+-- Macro TD v34.10 - Priority UI Load, Safe Buffer & Precise Targeting
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
-local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
+
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+    Players.PlayerAdded:Wait()
+    LocalPlayer = Players.LocalPlayer
+end
 
 local FOLDER_NAME = "MacroTD_Data"
-if isfolder and makefolder and not isfolder(FOLDER_NAME) then
-    makefolder(FOLDER_NAME)
-end
-
-local isRecording = false
-local isPlaying = false
-local autoPlayOnRejoin = false
-local autoElevator = false
-local selectedElevator = "Elevator2"
-
-local recordedData = {}
-local recordedTowers = {}
-local towerCounter = 0
-local recordStartTime = 0
-
-local elevatorOptions = {
-    {Name = "Toilet City", Code = "Elevator2"},
-    {Name = "Desert", Code = "Elevator8"},
-    {Name = "Cameraman HQ", Code = "Elevator12"}
-}
-local currentElevatorIndex = 1
-
-local lastValidCash = 200
-local function getPlayerCash()
-    local success, cash = pcall(function()
-        if LocalPlayer:FindFirstChild("leaderstats") then
-            for _, stat in ipairs(LocalPlayer.leaderstats:GetChildren()) do
-                if stat:IsA("ValueBase") and typeof(stat.Value) == "number" then
-                    lastValidCash = stat.Value
-                    return stat.Value
-                end
-            end
-        end
-        local pg = LocalPlayer:FindFirstChild("PlayerGui")
-        if pg then
-            for _, gui in ipairs(pg:GetDescendants()) do
-                if gui:IsA("TextLabel") then
-                    local text = gui.Text
-                    local num = tonumber(text:gsub("[^%d]", ""))
-                    if num and num > 0 and num < 10000000 and (gui.Name:lower():find("cash") or gui.Name:lower():find("money") or gui.Name:lower():find("coin") or text:find("$")) then
-                        lastValidCash = num
-                        return num
-                    end
-                end
-            end
-        end
-        return lastValidCash
-    end)
-    return success and cash or lastValidCash
-end
-
-local function teleportToElevator(elevatorCode)
-    local char = LocalPlayer.Character
-    if not char then return end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-
-    local targetElevator = nil
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model") and obj.Name == elevatorCode then
-            targetElevator = obj
-            break
-        end
+pcall(function()
+    if isfolder and makefolder and not isfolder(FOLDER_NAME) then
+        makefolder(FOLDER_NAME)
     end
+end)
 
-    if targetElevator then
-        local cf = targetElevator:GetPivot()
-        root.CFrame = cf + Vector3.new(0, 3, 0)
-    end
-end
-
-local function serializeVal(v)
-    if typeof(v) == "CFrame" then
-        return {__type = "CFrame", c = {v:GetComponents()}}
-    elseif typeof(v) == "Vector3" then
-        return {__type = "Vector3", x = v.X, y = v.Y, z = v.Z}
-    elseif typeof(v) == "Instance" then
-        return {__type = "Instance", name = v.Name, className = v.ClassName}
-    elseif type(v) == "table" then
-        local res = {}
-        for k, val in pairs(v) do
-            res[tostring(k)] = serializeVal(val)
-        end
-        return res
-    else
-        return v
-    end
-end
-
-local function deserializeVal(v)
-    if type(v) == "table" then
-        if v.__type == "CFrame" then
-            return CFrame.new(unpack(v.c))
-        elseif v.__type == "Vector3" then
-            return Vector3.new(v.x, v.y, v.z)
-        elseif v.__type == "Instance" then
-            return {__isSerializedInstance = true, name = v.name, className = v.className}
-        else
-            local res = {}
-            for k, val in pairs(v) do
-                local numKey = tonumber(k)
-                res[numKey or k] = deserializeVal(val)
-            end
-            return res
-        end
-    else
-        return v
-    end
-end
-
+-- ==================== UI PEMBUATAN UTAMA (DIPINDAH KE ATAS) ====================
 local function getGuiParent()
     local success, hui = pcall(function() return gethui and gethui() end)
     if success and hui then return hui end
@@ -153,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.9.1 (UI Fixed)"
+title.Text = "Macro TD v34.10 (UI Priority)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -311,6 +213,113 @@ minimizeBtn.MouseButton1Click:Connect(function()
         minimizeBtn.Text = "-"
     end
 end)
+
+-- ==================== VARIABEL & LOGIKA UTAMA ====================
+local isRecording = false
+local isPlaying = false
+local autoPlayOnRejoin = false
+local autoElevator = false
+local selectedElevator = "Elevator2"
+
+local recordedData = {}
+local recordedTowers = {}
+local towerCounter = 0
+local recordStartTime = 0
+
+local elevatorOptions = {
+    {Name = "Toilet City", Code = "Elevator2"},
+    {Name = "Desert", Code = "Elevator8"},
+    {Name = "Cameraman HQ", Code = "Elevator12"}
+}
+local currentElevatorIndex = 1
+
+local lastValidCash = 200
+local function getPlayerCash()
+    local success, cash = pcall(function()
+        if LocalPlayer:FindFirstChild("leaderstats") then
+            for _, stat in ipairs(LocalPlayer.leaderstats:GetChildren()) do
+                if stat:IsA("ValueBase") and typeof(stat.Value) == "number" then
+                    lastValidCash = stat.Value
+                    return stat.Value
+                end
+            end
+        end
+        local pg = LocalPlayer:FindFirstChild("PlayerGui")
+        if pg then
+            for _, gui in ipairs(pg:GetDescendants()) do
+                if gui:IsA("TextLabel") then
+                    local text = gui.Text
+                    local num = tonumber(text:gsub("[^%d]", ""))
+                    if num and num > 0 and num < 10000000 and (gui.Name:lower():find("cash") or gui.Name:lower():find("money") or gui.Name:lower():find("coin") or text:find("$")) then
+                        lastValidCash = num
+                        return num
+                    end
+                end
+            end
+        end
+        return lastValidCash
+    end)
+    return success and cash or lastValidCash
+end
+
+local function teleportToElevator(elevatorCode)
+    local char = LocalPlayer.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    local targetElevator = nil
+    for _, obj in ipairs(Workspace:GetDescendants()) do
+        if obj:IsA("Model") and obj.Name == elevatorCode then
+            targetElevator = obj
+            break
+        end
+    end
+
+    if targetElevator then
+        local cf = targetElevator:GetPivot()
+        root.CFrame = cf + Vector3.new(0, 3, 0)
+    end
+end
+
+local function serializeVal(v)
+    if typeof(v) == "CFrame" then
+        return {__type = "CFrame", c = {v:GetComponents()}}
+    elseif typeof(v) == "Vector3" then
+        return {__type = "Vector3", x = v.X, y = v.Y, z = v.Z}
+    elseif typeof(v) == "Instance" then
+        return {__type = "Instance", name = v.Name, className = v.ClassName}
+    elseif type(v) == "table" then
+        local res = {}
+        for k, val in pairs(v) do
+            res[tostring(k)] = serializeVal(val)
+        end
+        return res
+    else
+        return v
+    end
+end
+
+local function deserializeVal(v)
+    if type(v) == "table" then
+        if v.__type == "CFrame" then
+            return CFrame.new(unpack(v.c))
+        elseif v.__type == "Vector3" then
+            return Vector3.new(v.x, v.y, v.z)
+        elseif v.__type == "Instance" then
+            return {__isSerializedInstance = true, name = v.name, className = v.className}
+        else
+            local res = {}
+            for k, val in pairs(v) do
+                local numKey = tonumber(k)
+                res[numKey or k] = deserializeVal(val)
+            end
+            return res
+        end
+    else
+        return v
+    end
+end
 
 elevatorSelectBtn.MouseButton1Click:Connect(function()
     currentElevatorIndex = currentElevatorIndex + 1
