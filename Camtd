@@ -1,4 +1,4 @@
--- Macro TD v34.12 - Fixed Cash Reader & Verified Playback
+-- Macro TD v34.13 - Verified Placement & Upgrade Cash Check
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.12 (Cash Reader Fixed)"
+title.Text = "Macro TD v34.13 (Verified Placement)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -234,7 +234,6 @@ local elevatorOptions = {
 local currentElevatorIndex = 1
 
 local lastValidCash = 500
--- PERBAIKAN TOTAL PADA FUNGSI PEMBACA CASH AGAR TIDAK SALAH BACA LABEL LAIN
 local function getPlayerCash()
     local success, cash = pcall(function()
         if LocalPlayer:FindFirstChild("leaderstats") then
@@ -251,7 +250,6 @@ local function getPlayerCash()
                 if gui:IsA("TextLabel") then
                     local nameLower = gui.Name:lower()
                     local text = gui.Text
-                    -- Hanya ambil label yang namanya mengandung indikator uang/cash spesifik
                     if nameLower:find("cash") or nameLower:find("money") or nameLower:find("coin") or nameLower:find("balance") then
                         local num = tonumber(text:gsub("[^%d]", ""))
                         if num and num >= 0 and num < 10000000 then
@@ -815,7 +813,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Fixed Cash Reader Active)...")
+    logConsole("PLAYBACK STARTED (Verified Placement & Upgrade Active)...")
     
     task.spawn(function()
         local playbackStart = tick()
@@ -841,6 +839,7 @@ function startPlayback()
                         end
                         if not isPlaying then return end
 
+                        local cashBeforePlay = getPlayerCash()
                         local beforeSnapshot = {}
                         for _, v in ipairs(Workspace:GetDescendants()) do
                             if v:IsA("Model") then beforeSnapshot[v] = true end
@@ -849,29 +848,33 @@ function startPlayback()
                         if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
                         else remoteObj:FireServer(unpack(realArgs)) end
                         
-                        task.wait(0.25)
+                        task.wait(0.3)
+                        local cashAfterPlay = getPlayerCash()
                         
-                        local timer = 0
-                        repeat
-                            task.wait(0.1)
-                            timer = timer + 0.1
-                            for _, v in ipairs(Workspace:GetDescendants()) do
-                                if v:IsA("Model") and not beforeSnapshot[v] and v ~= LocalPlayer.Character then
-                                    if getRootFromModel(v) then
-                                        newlySpawnedModel = v; break
+                        -- VERIFIKASI NYATA: Pastikan cash berkurang (server menerima pembelian tower)
+                        if cashBeforePlay > cashAfterPlay then
+                            local timer = 0
+                            repeat
+                                task.wait(0.1)
+                                timer = timer + 0.1
+                                for _, v in ipairs(Workspace:GetDescendants()) do
+                                    if v:IsA("Model") and not beforeSnapshot[v] and v ~= LocalPlayer.Character then
+                                        if getRootFromModel(v) then
+                                            newlySpawnedModel = v; break
+                                        end
                                     end
                                 end
+                            until newlySpawnedModel or timer >= 2.0
+                            
+                            if not newlySpawnedModel and action.PositionCF then
+                                local excludeInstances = {}
+                                for _, t in pairs(sessionTowers) do excludeInstances[t] = true end
+                                newlySpawnedModel = findTowerNearPosition(action.PositionCF, excludeInstances)
                             end
-                        until newlySpawnedModel or timer >= 3.0
-                        
-                        if not newlySpawnedModel and action.PositionCF then
-                            local excludeInstances = {}
-                            for _, t in pairs(sessionTowers) do excludeInstances[t] = true end
-                            newlySpawnedModel = findTowerNearPosition(action.PositionCF, excludeInstances)
                         end
                         
                         if not newlySpawnedModel then
-                            logConsole(string.format("[%d/%d] PLACE Tower #%d Gagal/Rate-Limited, Mencoba Lagi...", index, #recordedData, action.TowerIndex))
+                            logConsole(string.format("[%d/%d] PLACE Tower #%d Ditolak Server/Cash Kurang, Menunggu...", index, #recordedData, action.TowerIndex))
                             task.wait(1)
                         end
                     until newlySpawnedModel or not isPlaying
