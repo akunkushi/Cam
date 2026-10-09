@@ -1,4 +1,4 @@
--- Macro TD v34.38 - Dynamic Runtime UUID Fix for Post-Update
+-- Macro TD v34.40 - Strict Success Recording Filter
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -21,12 +21,12 @@ end)
 
 -- ==================== UI PEMBUATAN UTAMA ====================
 local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-if playerGui:FindFirstChild("MacroGameplayGUI_v38") then
-    playerGui.MacroGameplayGUI_v38:Destroy()
+if playerGui:FindFirstChild("MacroGameplayGUI_v40") then
+    playerGui.MacroGameplayGUI_v40:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v38"
+screenGui.Name = "MacroGameplayGUI_v40"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = playerGui
 
@@ -47,7 +47,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v38 (Dynamic UUID Fix)"
+title.Text = "Macro TD v40 (Strict Success Filter)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -468,7 +468,7 @@ saveBtn.MouseButton1Click:Connect(function()
     pcall(function()
         writefile(fileName, fileContent)
         saveConfig()
-        logConsole("Berhasil Save: " .. nameBox.Text)
+        logConsole("Berhasil Save: " .. nameBox.Text .. " (Total Aksi Valid: " .. #recordedData .. ")")
     end)
 end)
 
@@ -643,29 +643,9 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     return 1
 end
 
--- PENCARIAN ID RUNTIME: Mengambil string ID (UUID) dari model tower di sesi game saat ini secara otomatis
-local function extractRuntimeIdFromModel(model)
-    if not model then return nil end
-    -- Cek apakah ada atribut atau nilai string di dalam model yang menyerupai UUID
-    for _, attrName in ipairs(model:GetAttributeList()) do
-        local val = model:GetAttribute(attrName)
-        if type(val) == "string" and #val > 15 then
-            return val
-        end
-    end
-    for _, desc in ipairs(model:GetDescendants()) do
-        if desc:IsA("StringValue") and #desc.Value > 15 then
-            return desc.Value
-        end
-    end
-    -- Jika tidak ketemu lewat atribut/string value, ambil nama atau identifikasi unik yang ada di model
-    return nil
-end
-
 local function rebuildArgsForPlaybackWithDynamicId(oldArgs, newModel)
     if not newModel then return oldArgs end
     
-    -- Cari runtime ID dari model saat ini di sesi game berjalan
     local runtimeId = nil
     for _, attrName in ipairs(newModel:GetAttributeList()) do
         local val = newModel:GetAttribute(attrName)
@@ -699,7 +679,6 @@ local function rebuildArgsForPlaybackWithDynamicId(oldArgs, newModel)
                     res[k] = newModel
                 end
             elseif type(v) == "string" and #v > 15 and runtimeId then
-                -- Timpa string ID lama dengan runtime ID dinamis dari sesi game saat ini!
                 res[k] = runtimeId
             else
                 res[k] = v
@@ -715,6 +694,7 @@ local function rebuildArgsForPlaybackWithDynamicId(oldArgs, newModel)
     end
 end
 
+-- HOOK RECORDING DENGAN FILTER SUKSES KETAT
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -730,74 +710,73 @@ if not getgenv().MacroHookedTD then
                         local timeStamp = tick() - recordStartTime
                         local cashBefore = getPlayerCash()
                         
+                        -- Biarkan remote tereksekusi duluan di game
+                        task.wait(0.35)
+                        local cashAfter = getPlayerCash()
+                        local cashDiff = cashBefore - cashAfter -- Positif jika berkurang (beli/upgrade), Negatif jika bertambah (sell)
+                        
                         if rName == "TowerAdd" then
-                            towerCounter = towerCounter + 1
-                            local currentIdx = towerCounter
                             local cf = getCFrameFromArgs(args)
-                            
-                            task.wait(0.4)
-                            local cashAfter = getPlayerCash()
-                            local cost = cashBefore - cashAfter
                             local newlySpawnedModel = findTowerNearPosition(cf)
                             
-                            if not cf and newlySpawnedModel then
-                                cf = newlySpawnedModel:GetPivot()
-                            end
-                            
-                            recordedTowers[currentIdx] = { 
-                                Index = currentIdx, 
-                                PositionCF = cf, 
-                                Model = newlySpawnedModel
-                            }
-                            
-                            local actionEntry = {
-                                Type = "ADD", Time = timeStamp, Remote = self, Method = method,
-                                Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = 150
-                            }
-                            table.insert(recordedData, actionEntry)
-                            local entryIndex = #recordedData
-                            
-                            if (cost > 0 and cost < 100000) or newlySpawnedModel then
-                                if cost > 0 and cost < 100000 then actionEntry.CashCost = cost end
-                                logConsole(string.format("[Rec] TowerAdd #%d Sukses (Cost: %d)", currentIdx, actionEntry.CashCost))
+                            -- Validasi sukses: Cash berkurang atau model tower benar-benar muncul di map
+                            if (cashDiff > 0 and cashDiff < 100000) or newlySpawnedModel then
+                                towerCounter = towerCounter + 1
+                                local currentIdx = towerCounter
+                                
+                                if not cf and newlySpawnedModel then
+                                    cf = newlySpawnedModel:GetPivot()
+                                end
+                                
+                                recordedTowers[currentIdx] = { 
+                                    Index = currentIdx, 
+                                    PositionCF = cf, 
+                                    Model = newlySpawnedModel
+                                }
+                                
+                                local actionEntry = {
+                                    Type = "ADD", Time = timeStamp, Remote = self, Method = method,
+                                    Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = (cashDiff > 0 and cashDiff) or 150
+                                }
+                                table.insert(recordedData, actionEntry)
+                                logConsole(string.format("[Rec Valid] TowerAdd #%d (Sukses)", currentIdx))
                             else
-                                table.remove(recordedData, entryIndex)
-                                recordedTowers[currentIdx] = nil
-                                towerCounter = towerCounter - 1
-                                logConsole("[Rec] TowerAdd Gagal/Dibatalkan (Dihapus dari rekaman)")
+                                logConsole("[Rec Filter] TowerAdd Gagal/Ditolak Server (Tidak Direkam)")
                             end
                             
-                        elseif rName == "TowerUpgrade" or rName == "TowerSell" then
-                            local targetModel = getTowerFromArgs(args)
-                            local targetIdx = resolveTargetIndex(args, targetModel, nil)
-                            local actionType = (rName == "TowerUpgrade" and "UPGRADE" or "SELL")
-                            
-                            local actionEntry = {
-                                Type = actionType, Time = timeStamp, Remote = self, Method = method,
-                                Args = serializeVal(args), TargetIndex = targetIdx, CashCost = 150,
-                                PositionCF = targetModel and targetModel:GetPivot() or nil
-                            }
-                            table.insert(recordedData, actionEntry)
-                            local entryIndex = #recordedData
-                            
-                            task.wait(0.4)
-                            local cashAfter = getPlayerCash()
-                            local cost = cashBefore - cashAfter
-                            
-                            local isSuccess = false
-                            if rName == "TowerUpgrade" and cost > 0 and cost < 100000 then
-                                isSuccess = true
-                                actionEntry.CashCost = cost
-                            elseif rName == "TowerSell" and cost < 0 then
-                                isSuccess = true
-                                actionEntry.CashCost = math.abs(cost)
-                            end
-                            
-                            if isSuccess then
-                                logConsole(string.format("[Rec] %s -> Tower #%d Sukses", rName, targetIdx))
+                        elseif rName == "TowerUpgrade" then
+                            -- Validasi sukses: Cash berkurang (artinya upgrade berhasil dibayar)
+                            if cashDiff > 0 and cashDiff < 100000 then
+                                local targetModel = getTowerFromArgs(args)
+                                local targetIdx = resolveTargetIndex(args, targetModel, nil)
+                                
+                                local actionEntry = {
+                                    Type = "UPGRADE", Time = timeStamp, Remote = self, Method = method,
+                                    Args = serializeVal(args), TargetIndex = targetIdx, CashCost = cashDiff,
+                                    PositionCF = targetModel and targetModel:GetPivot() or nil
+                                }
+                                table.insert(recordedData, actionEntry)
+                                logConsole(string.format("[Rec Valid] UPGRADE Tower #%d (Cost: %d)", targetIdx, cashDiff))
                             else
-                                table.remove(recordedData, entryIndex)
-                                logConsole(string.format("[Rec] %s Gagal/Dibatalkan (Dihapus dari rekaman)", rName))
+                                logConsole("[Rec Filter] UPGRADE Gagal/Ditolak Server (Tidak Direkam)")
+                            end
+                            
+                        elseif rName == "TowerSell" then
+                            -- Validasi sukses: Cash bertambah (artinya sell berhasil)
+                            if cashDiff < 0 then
+                                local targetModel = getTowerFromArgs(args)
+                                local targetIdx = resolveTargetIndex(args, targetModel, nil)
+                                local earnedCash = math.abs(cashDiff)
+                                
+                                local actionEntry = {
+                                    Type = "SELL", Time = timeStamp, Remote = self, Method = method,
+                                    Args = serializeVal(args), TargetIndex = targetIdx, CashCost = earnedCash,
+                                    PositionCF = targetModel and targetModel:GetPivot() or nil
+                                }
+                                table.insert(recordedData, actionEntry)
+                                logConsole(string.format("[Rec Valid] SELL Tower #%d (Earn: %d)", targetIdx, earnedCash))
+                            else
+                                logConsole("[Rec Filter] SELL Gagal/Ditolak Server (Tidak Direkam)")
                             end
                         end
                     end)
@@ -818,11 +797,11 @@ recordBtn.MouseButton1Click:Connect(function()
         recordStartTime = tick()
         recordBtn.Text = "Record: ON"
         recordBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        logConsole("RECORDING STARTED...")
+        logConsole("RECORDING STARTED (Strict Filter)...")
     else
         recordBtn.Text = "Record: OFF"
         recordBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
-        logConsole("RECORDING STOPPED. Total: " .. #recordedData)
+        logConsole(string.format("RECORDING STOPPED. Total Aksi Valid: %d", #recordedData))
     end
 end)
 
@@ -835,7 +814,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Dynamic UUID Fix)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. ")...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -915,8 +894,8 @@ function startPlayback()
                     local successAction = false
                     local retryCount = 0
                     repeat
-                        while isPlaying and getPlayerCash() < requiredCost do
-                            logConsole(string.format("[%d/%d] Menunggu Cash %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
+                        while isPlaying and action.Type == "UPGRADE" and getPlayerCash() < requiredCost do
+                            logConsole(string.format("[%d/%d] Menunggu Cash UPGRADE (Butuh: %d | Cash: %d)...", index, #recordedData, requiredCost, getPlayerCash()))
                             task.wait(1 / selectedSpeed)
                         end
                         if not isPlaying then return end
@@ -937,8 +916,6 @@ function startPlayback()
                         
                         if currentModel then
                             task.wait(0.2 / selectedSpeed)
-                            local cashBeforePlay = getPlayerCash()
-                            -- Mengganti ID string lama dengan ID runtime aktif dari sesi saat ini secara otomatis
                             local playArgs = rebuildArgsForPlaybackWithDynamicId(realArgs, currentModel)
                             
                             pcall(function()
@@ -950,21 +927,11 @@ function startPlayback()
                             end)
                             
                             task.wait(0.5 / selectedSpeed)
-                            local cashAfterPlay = getPlayerCash()
-                            
-                            if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
-                                successAction = true
-                                logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE", index, #recordedData, targetIdx))
-                            elseif action.Type == "SELL" and cashBeforePlay < cashAfterPlay then
-                                successAction = true
-                                logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
-                            else
-                                retryCount = retryCount + 1
-                                logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server (Mencoba Lagi #%d)...", index, #recordedData, action.Type, targetIdx, retryCount))
-                                task.wait(0.8 / selectedSpeed)
-                            end
+                            successAction = true
+                            logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
                         else
-                            logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
+                            retryCount = retryCount + 1
+                            logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada (Retry #%d)...", index, #recordedData, targetIdx, retryCount))
                             task.wait(0.5 / selectedSpeed)
                         end
                     until successAction or not isPlaying or retryCount > 15
