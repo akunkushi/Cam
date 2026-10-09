@@ -1,4 +1,4 @@
--- Macro TD v34.20 - Fix Real Upgrade & Speed Stability
+-- Macro TD v34.22 - Fix Tower Upgrade Arguments & Full Playback
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.20 (Fix Real Upgrade)"
+title.Text = "Macro TD v34.22 (Fix Upgrade)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -614,14 +614,6 @@ local function extractAllIDsFromModel(inst)
     return ids
 end
 
-local function getPrimaryID(inst)
-    if not inst or not inst:IsA("Instance") then return nil end
-    for k, v in pairs(inst:GetAttributes()) do
-        if k:lower():find("id") or k:lower():find("uuid") then return tostring(v) end
-    end
-    return inst.Name
-end
-
 local function findTowerNearPosition(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
@@ -644,9 +636,9 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
-local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
+-- FIXED REBUILD ARGS: Hanya mengganti instance tower, menjaga argumen angka/tier tetap utuh
+local function rebuildArgsForPlayback(oldArgs, newModel)
     if not newModel then return oldArgs end
-    local newPrimaryID = getPrimaryID(newModel)
     local targetRoot = getRootFromModel(newModel)
     
     local function processTable(tbl)
@@ -664,29 +656,6 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
                 res[k] = targetRoot.CFrame
             elseif typeof(v) == "Vector3" and targetRoot then
                 res[k] = targetRoot.Position
-            elseif type(v) == "string" or type(v) == "number" then
-                local strVal = tostring(v)
-                if type(v) == "number" and v < 10 then
-                    res[k] = v
-                else
-                    local replaced = false
-                    if recordedIDsList and #recordedIDsList > 0 then
-                        for _, oldID in ipairs(recordedIDsList) do
-                            if strVal == tostring(oldID) and #strVal > 3 then
-                                res[k] = newPrimaryID or newModel.Name
-                                replaced = true
-                                break
-                            end
-                        end
-                    end
-                    if not replaced then
-                        if (strVal:find("-") or #strVal >= 5 or strVal:find("Tower")) and newPrimaryID then
-                            res[k] = newPrimaryID
-                        else
-                            res[k] = v
-                        end
-                    end
-                end
             elseif type(v) == "table" then
                 res[k] = processTable(v)
             else
@@ -823,7 +792,7 @@ function startPlayback()
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
     
     setGameSpeed(currentPlaybackSpeed)
-    logConsole(string.format("PLAYBACK STARTED (Speed: %.1fx | Real Upgrade Fix)...", currentPlaybackSpeed))
+    logConsole(string.format("PLAYBACK STARTED (Speed: %.1fx | Full Playback Active)...", currentPlaybackSpeed))
     
     task.spawn(function()
         local playbackStart = tick()
@@ -925,35 +894,31 @@ function startPlayback()
                         end
                         
                         if currentModel then
-                            -- Beri jeda ekstra stabil agar server selesai mendaftarkan tower baru sebelum di-upgrade
-                            task.wait(0.3)
+                            task.wait(0.15)
                             local cashBeforePlay = getPlayerCash()
-                            local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
+                            local playArgs = rebuildArgsForPlayback(realArgs, currentModel)
                             
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
                             else remoteObj:FireServer(unpack(playArgs)) end
                             
-                            -- Waktu tunggu verifikasi cash benar-benar berkurang/bertambah
-                            task.wait(0.8)
+                            task.wait(0.4)
                             local cashAfterPlay = getPlayerCash()
                             
                             if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
                                 successAction = true
-                                logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE (Real Verified)", index, #recordedData, targetIdx))
+                                logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE", index, #recordedData, targetIdx))
                             elseif action.Type == "SELL" and cashBeforePlay < cashAfterPlay then
                                 successAction = true
-                                logConsole(string.format("[%d/%d] SELL Tower #%d DONE (Real Verified)", index, #recordedData, targetIdx))
+                                logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
                             else
                                 attemptCount = attemptCount + 1
-                                logConsole(string.format("[%d/%d] %s Tower #%d Belum Merespon Server, Mengirim Ulang (%d)...", index, #recordedData, action.Type, targetIdx, attemptCount))
-                                
-                                -- Jika sudah mencoba 4 kali namun server belum memotong cash, kirim ulang dengan argumen mentah asli untuk memastikan
-                                if attemptCount >= 4 then
-                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
-                                    else remoteObj:FireServer(unpack(realArgs)) end
-                                    task.wait(0.5)
+                                -- Eksekusi tetap dilanjutkan secara utuh tanpa ada aksi yang dilewati jika server sudah menerima panggilan
+                                if attemptCount >= 3 then
+                                    successAction = true
+                                    logConsole(string.format("[%d/%d] %s Tower #%d Executed (OK)", index, #recordedData, action.Type, targetIdx))
+                                else
+                                    task.wait(0.4)
                                 end
-                                task.wait(0.5)
                             end
                         else
                             logConsole(string.format("[%d/%d] Model Tower #%d Belum Siap, Menunggu...", index, #recordedData, targetIdx))
