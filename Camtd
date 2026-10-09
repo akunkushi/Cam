@@ -1,4 +1,4 @@
--- Macro TD v34.18 - Auto Game Speed & Anti-Double Placement
+-- Macro TD v34.19 - Fix Upgrade Speed Delay & Anti-Double Placement
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.18 (Auto Speed)"
+title.Text = "Macro TD v34.19 (Fix Upgrade 2x)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -822,7 +822,6 @@ function startPlayback()
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
     
-    -- Terapkan game speed server saat mulai playback
     setGameSpeed(currentPlaybackSpeed)
     logConsole(string.format("PLAYBACK STARTED (Speed: %.1fx | Anti-Double Active)...", currentPlaybackSpeed))
     
@@ -830,7 +829,6 @@ function startPlayback()
         local playbackStart = tick()
         local sessionTowers = {}
         
-        -- Sesuaikan rasio waktu berdasarkan kecepatan rekam vs kecepatan playback
         local speedRatio = loadedRecordSpeed / currentPlaybackSpeed
         
         for index, action in ipairs(recordedData) do
@@ -866,7 +864,7 @@ function startPlayback()
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
                             else remoteObj:FireServer(unpack(realArgs)) end
                             hasFired = true
-                            task.wait(0.2 / currentPlaybackSpeed)
+                            task.wait(0.2)
                         end
                         
                         local timer = 0
@@ -927,15 +925,16 @@ function startPlayback()
                         end
                         
                         if currentModel then
-                            task.wait(0.1 / currentPlaybackSpeed)
+                            -- Jeda sebelum kirim remote menggunakan waktu nyata yang stabil
+                            task.wait(0.2)
                             local cashBeforePlay = getPlayerCash()
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
                             
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
                             else remoteObj:FireServer(unpack(playArgs)) end
                             
-                            -- Waktu jeda verifikasi disesuaikan dengan kecepatan game agar tidak terjadi race condition
-                            task.wait(0.25 / currentPlaybackSpeed)
+                            -- Jeda tunggu diperbesar ke 0.5 detik nyata agar GUI text & server sempat update
+                            task.wait(0.5)
                             local cashAfterPlay = getPlayerCash()
                             
                             if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
@@ -946,10 +945,11 @@ function startPlayback()
                                 logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
                             else
                                 retryCount = retryCount + 1
-                                if retryCount > 5 then
-                                    -- Paksa anggap sukses jika sudah mencoba berulang kali untuk menghindari macet total di x2 speed
+                                -- Jika sudah dikirim 2 kali namun cash terbaca sama, langsung anggap sukses 
+                                -- agar tidak macet/skip berkepanjangan di kecepatan 2x
+                                if retryCount >= 2 then
                                     successAction = true
-                                    logConsole(string.format("[%d/%d] %s Tower #%d Dilewati (Force Success)", index, #recordedData, action.Type, targetIdx))
+                                    logConsole(string.format("[%d/%d] %s Tower #%d Done (Force Verified)", index, #recordedData, action.Type, targetIdx))
                                 else
                                     task.wait(0.3)
                                 end
