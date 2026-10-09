@@ -1,4 +1,4 @@
--- Macro TD v34.43 - Playback Error Logging & Robust Upgrade/Sell Fix
+-- Macro TD v34.18 - Speed Scaling & Match ID Adapt
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -20,15 +20,23 @@ pcall(function()
 end)
 
 -- ==================== UI PEMBUATAN UTAMA ====================
-local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-if playerGui:FindFirstChild("MacroGameplayGUI_v43") then
-    playerGui.MacroGameplayGUI_v43:Destroy()
+local function getGuiParent()
+    local success, hui = pcall(function() return gethui and gethui() end)
+    if success and hui then return hui end
+    local successCore, coreGui = pcall(function() return game:GetService("CoreGui") end)
+    if successCore and coreGui then return coreGui end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local guiParent = getGuiParent()
+if guiParent:FindFirstChild("MacroGameplayGUI_v34") then
+    guiParent.MacroGameplayGUI_v34:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v43"
+screenGui.Name = "MacroGameplayGUI_v34"
 screenGui.ResetOnSpawn = false
-screenGui.Parent = playerGui
+screenGui.Parent = guiParent
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Size = UDim2.new(0, 360, 0, 35)
@@ -47,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v43 (Debug Log & Fix)"
+title.Text = "Macro TD v34.18 (Speed Scaling)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -95,7 +103,7 @@ local nameBox = Instance.new("TextBox")
 nameBox.Size = UDim2.new(0, 105, 0, 28)
 nameBox.Position = UDim2.new(0, 15, 0, 45)
 nameBox.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-nameBox.Text = "makro_baru"
+nameBox.Text = "makro1"
 nameBox.PlaceholderText = "Nama..."
 nameBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 nameBox.Font = Enum.Font.SourceSans
@@ -152,29 +160,39 @@ autoElevatorBtn.Font = Enum.Font.SourceSansBold
 autoElevatorBtn.TextSize = 11
 autoElevatorBtn.Parent = contentFrame
 
+local speed15Btn = Instance.new("TextButton")
+speed15Btn.Size = UDim2.new(0, 160, 0, 28)
+speed15Btn.Position = UDim2.new(0, 15, 0, 115)
+speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+speed15Btn.Text = "Speed 1.5x: OFF"
+speed15Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+speed15Btn.Font = Enum.Font.SourceSansBold
+speed15Btn.TextSize = 11
+speed15Btn.Parent = contentFrame
+
+local speed20Btn = Instance.new("TextButton")
+speed20Btn.Size = UDim2.new(0, 160, 0, 28)
+speed20Btn.Position = UDim2.new(0, 185, 0, 115)
+speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+speed20Btn.Text = "Speed 2x: OFF"
+speed20Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+speed20Btn.Font = Enum.Font.SourceSansBold
+speed20Btn.TextSize = 11
+speed20Btn.Parent = contentFrame
+
 local autoPlayBtn = Instance.new("TextButton")
-autoPlayBtn.Size = UDim2.new(0, 160, 0, 28)
-autoPlayBtn.Position = UDim2.new(0, 15, 0, 115)
+autoPlayBtn.Size = UDim2.new(0, 330, 0, 28)
+autoPlayBtn.Position = UDim2.new(0, 15, 0, 150)
 autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-autoPlayBtn.Text = "Auto Play Match: OFF"
+autoPlayBtn.Text = "Auto Play Rejoin: OFF"
 autoPlayBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 autoPlayBtn.Font = Enum.Font.SourceSansBold
 autoPlayBtn.TextSize = 11
 autoPlayBtn.Parent = contentFrame
 
-local speedBtn = Instance.new("TextButton")
-speedBtn.Size = UDim2.new(0, 160, 0, 28)
-speedBtn.Position = UDim2.new(0, 185, 0, 115)
-speedBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 90)
-speedBtn.Text = "Speed: x1"
-speedBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-speedBtn.Font = Enum.Font.SourceSansBold
-speedBtn.TextSize = 11
-speedBtn.Parent = contentFrame
-
 local logFrame = Instance.new("ScrollingFrame")
-logFrame.Size = UDim2.new(0, 330, 0, 250)
-logFrame.Position = UDim2.new(0, 15, 0, 150)
+logFrame.Size = UDim2.new(0, 330, 0, 225)
+logFrame.Position = UDim2.new(0, 15, 0, 185)
 logFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
 logFrame.BorderSizePixel = 0
 logFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -187,11 +205,11 @@ UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 UIListLayout.Padding = UDim.new(0, 2)
 
 local function logConsole(msg)
-    print("[MACRO TD]: " .. tostring(msg))
+    print("[MACRO TD]: " .. msg)
     local logText = Instance.new("TextLabel")
     logText.Size = UDim2.new(1, -10, 0, 16)
     logText.BackgroundTransparency = 1
-    logText.Text = " " .. tostring(msg)
+    logText.Text = " " .. msg
     logText.TextColor3 = Color3.fromRGB(180, 220, 180)
     logText.TextXAlignment = Enum.TextXAlignment.Left
     logText.Font = Enum.Font.Code
@@ -211,7 +229,7 @@ minimizeBtn.MouseButton1Click:Connect(function()
         minimizeBtn.Text = "+"
     else
         contentFrame.Visible = true
-        mainFrame.Size = UDim2.new(0, 360, 0, 415)
+        mainFrame.Size = UDim2.new(0, 360, 0, 430)
         minimizeBtn.Text = "-"
     end
 end)
@@ -219,14 +237,11 @@ end)
 -- ==================== VARIABEL & LOGIKA UTAMA ====================
 local isRecording = false
 local isPlaying = false
-local autoPlayMatch = false
+local autoPlayOnRejoin = false
 local autoElevator = false
 local selectedElevator = "Elevator2"
-
-local speedOptions = {1, 1.5, 2}
-local speedNames = {"x1", "x1.5", "x2"}
-local currentSpeedIndex = 1
-local selectedSpeed = 1
+local speed15Active = false
+local speed20Active = false
 
 local recordedData = {}
 local recordedTowers = {}
@@ -254,7 +269,7 @@ local function getPlayerCash()
         local pg = LocalPlayer:FindFirstChild("PlayerGui")
         if pg then
             for _, gui in ipairs(pg:GetDescendants()) do
-                if gui:IsA("TextLabel") or gui:IsA("TextButton") then
+                if gui:IsA("TextLabel") then
                     local nameLower = gui.Name:lower()
                     local text = gui.Text
                     if nameLower:find("cash") or nameLower:find("money") or nameLower:find("coin") or nameLower:find("balance") then
@@ -272,22 +287,51 @@ local function getPlayerCash()
     return success and cash or lastValidCash
 end
 
-local function applyGameSpeed(speedVal)
+local function setGameSpeed(speedVal)
     pcall(function()
-        local remote = ReplicatedStorage:FindFirstChild("ModuleLoader")
-        if remote then
-            remote.Shared.Network.RemoteFunction.ChangeSpeed:InvokeServer(speedVal)
+        local speedRemote = ReplicatedStorage.ModuleLoader.Shared.Network.RemoteFunction.ChangeSpeed
+        if speedRemote then
+            speedRemote:InvokeServer(speedVal)
         end
     end)
 end
 
-speedBtn.MouseButton1Click:Connect(function()
-    currentSpeedIndex = currentSpeedIndex + 1
-    if currentSpeedIndex > #speedOptions then currentSpeedIndex = 1 end
-    selectedSpeed = speedOptions[currentSpeedIndex]
-    speedBtn.Text = "Speed: " .. speedNames[currentSpeedIndex]
-    applyGameSpeed(selectedSpeed)
-    saveConfig()
+speed15Btn.MouseButton1Click:Connect(function()
+    speed15Active = not speed15Active
+    if speed15Active then
+        speed20Active = false
+        speed20Btn.Text = "Speed 2x: OFF"
+        speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+        
+        speed15Btn.Text = "Speed 1.5x: ON"
+        speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+        setGameSpeed(1.5)
+        logConsole("Speed Game diubah ke x1.5")
+    else
+        speed15Btn.Text = "Speed 1.5x: OFF"
+        speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+        setGameSpeed(1)
+        logConsole("Speed Game dikembalikan ke x1")
+    end
+end)
+
+speed20Btn.MouseButton1Click:Connect(function()
+    speed20Active = not speed20Active
+    if speed20Active then
+        speed15Active = false
+        speed15Btn.Text = "Speed 1.5x: OFF"
+        speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+        
+        speed20Btn.Text = "Speed 2x: ON"
+        speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+        setGameSpeed(2)
+        logConsole("Speed Game diubah ke x2")
+    else
+        speed20Btn.Text = "Speed 2x: OFF"
+        speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+        setGameSpeed(1)
+        logConsole("Speed Game dikembalikan ke x1")
+    end
 end)
 
 local function teleportToElevator(elevatorCode)
@@ -389,12 +433,11 @@ end)
 function saveConfig()
     if not writefile then return end
     local cfg = {
-        autoPlayMatch = autoPlayMatch,
+        autoPlay = autoPlayOnRejoin,
         autoElevator = autoElevator,
         selectedElevator = selectedElevator,
         elevatorIndex = currentElevatorIndex,
-        selectedMacro = nameBox.Text,
-        gameSpeedIndex = currentSpeedIndex
+        selectedMacro = nameBox.Text
     }
     pcall(function()
         writefile(FOLDER_NAME .. "/config.json", HttpService:JSONEncode(cfg))
@@ -406,21 +449,14 @@ function loadConfig()
     pcall(function()
         local data = HttpService:JSONDecode(readfile(FOLDER_NAME .. "/config.json"))
         if data then
-            autoPlayMatch = data.autoPlayMatch or data.autoPlay or false
+            autoPlayOnRejoin = data.autoPlay or false
             autoElevator = data.autoElevator or false
             selectedElevator = data.selectedElevator or "Elevator2"
             currentElevatorIndex = data.elevatorIndex or 1
             if data.selectedMacro then nameBox.Text = data.selectedMacro end
             
-            if data.gameSpeedIndex then
-                currentSpeedIndex = data.gameSpeedIndex
-                if currentSpeedIndex > #speedOptions then currentSpeedIndex = 1 end
-                selectedSpeed = speedOptions[currentSpeedIndex]
-                speedBtn.Text = "Speed: " .. speedNames[currentSpeedIndex]
-            end
-            
-            autoPlayBtn.Text = autoPlayMatch and "Auto Play Match: ON" or "Auto Play Match: OFF"
-            autoPlayBtn.BackgroundColor3 = autoPlayMatch and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
+            autoPlayBtn.Text = autoPlayOnRejoin and "Auto Play Rejoin: ON" or "Auto Play Rejoin: OFF"
+            autoPlayBtn.BackgroundColor3 = autoPlayOnRejoin and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
             
             autoElevatorBtn.Text = autoElevator and "Auto Elevator: ON" or "Auto Elevator: OFF"
             autoElevatorBtn.BackgroundColor3 = autoElevator and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
@@ -431,12 +467,12 @@ function loadConfig()
 end
 
 autoPlayBtn.MouseButton1Click:Connect(function()
-    autoPlayMatch = not autoPlayMatch
-    if autoPlayMatch then
-        autoPlayBtn.Text = "Auto Play Match: ON"
+    autoPlayOnRejoin = not autoPlayOnRejoin
+    if autoPlayOnRejoin then
+        autoPlayBtn.Text = "Auto Play Rejoin: ON"
         autoPlayBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
     else
-        autoPlayBtn.Text = "Auto Play Match: OFF"
+        autoPlayBtn.Text = "Auto Play Rejoin: OFF"
         autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
     end
     saveConfig()
@@ -468,7 +504,7 @@ saveBtn.MouseButton1Click:Connect(function()
     pcall(function()
         writefile(fileName, fileContent)
         saveConfig()
-        logConsole("Berhasil Save: " .. nameBox.Text .. " (Total Aksi: " .. #recordedData .. ")")
+        logConsole("Berhasil Save: " .. nameBox.Text)
     end)
 end)
 
@@ -519,7 +555,7 @@ function loadMacroFromFile(mName)
     end)
     
     if success then
-        logConsole("Berhasil Load: " .. mName .. " (" .. #recordedData .. " aksi)")
+        logConsole("Berhasil Load (Kompatibel): " .. mName .. " (" .. #recordedData .. " aksi)")
         return true
     else
         logConsole("Gagal membaca file makro!")
@@ -539,7 +575,7 @@ local function deleteMacroFile(mName)
             logConsole("Berhasil Hapus File: " .. mName)
         end)
     else
-        logConsole("File " .. mName .. " tidak ditemukan!")
+        logConsole("File " .. mName .. " tidak ditemukan atau fungsi delfile tidak disupport!")
     end
 end
 
@@ -572,6 +608,41 @@ local function getCFrameFromArgs(args)
     return nil
 end
 
+local function getTowerFromArgs(args)
+    for _, v in pairs(args) do
+        if typeof(v) == "Instance" and (v:IsA("Model") or v:IsA("BasePart")) then
+            if v ~= LocalPlayer.Character and not v:IsDescendantOf(LocalPlayer.Character) then
+                if v:IsA("BasePart") then return v.Parent end
+                return v
+            end
+        elseif type(v) == "table" then
+            local found = getTowerFromArgs(v)
+            if found then return found end
+        end
+    end
+    return nil
+end
+
+local function extractAllIDsFromModel(inst)
+    if not inst or not inst:IsA("Instance") then return {} end
+    local ids = {inst.Name}
+    for k, v in pairs(inst:GetAttributes()) do
+        if type(v) == "string" or type(v) == "number" then table.insert(ids, tostring(v)) end
+    end
+    for _, child in ipairs(inst:GetDescendants()) do
+        if child:IsA("ValueBase") and child.Value then table.insert(ids, tostring(child.Value)) end
+    end
+    return ids
+end
+
+local function getPrimaryID(inst)
+    if not inst or not inst:IsA("Instance") then return nil end
+    for k, v in pairs(inst:GetAttributes()) do
+        if k:lower():find("id") or k:lower():find("uuid") then return tostring(v) end
+    end
+    return inst.Name
+end
+
 local function findTowerNearPosition(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
@@ -594,82 +665,64 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
-local function resolveTargetIndex(args, targetModel, actionPos)
-    local targetPos = actionPos
-    if not targetPos then
-        local cf = getCFrameFromArgs(args)
-        if cf then targetPos = cf.Position end
-    end
-    
-    if targetPos then
-        local minDist = 999999
-        local bestIdx = 1
-        for idx, tInfo in pairs(recordedTowers) do
-            if tInfo.PositionCF then
-                local dist = (tInfo.PositionCF.Position - targetPos).Magnitude
-                if dist < minDist then
-                    minDist = dist
-                    bestIdx = idx
-                end
-            end
-        end
-        return bestIdx
-    end
-    return 1
-end
-
-local function rebuildArgsForPlayback(oldArgs, newModel)
+local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel, newMatchIDs)
     if not newModel then return oldArgs end
+    local newPrimaryID = getPrimaryID(newModel)
+    local targetRoot = getRootFromModel(newModel)
     
-    local runtimeId = nil
-    for _, attrName in ipairs(newModel:GetAttributeList()) do
-        local val = newModel:GetAttribute(attrName)
-        if type(val) == "string" and #val > 15 then
-            runtimeId = val
-            break
-        end
-    end
-    if not runtimeId then
-        for _, desc in ipairs(newModel:GetDescendants()) do
-            if desc:IsA("StringValue") and #desc.Value > 15 then
-                runtimeId = desc.Value
-                break
-            end
-        end
-    end
-
-    local function recursiveProcess(tbl)
+    local function processTable(tbl)
         local res = {}
         for k, v in pairs(tbl) do
-            if type(v) == "table" then
-                if v.__isSerializedInstance then
-                    res[k] = newModel
-                else
-                    res[k] = recursiveProcess(v)
-                end
+            if type(v) == "table" and v.__isSerializedInstance then
+                res[k] = newModel
             elseif typeof(v) == "Instance" then
                 if v:IsA("Player") or v == LocalPlayer or (LocalPlayer.Character and v:IsDescendantOf(LocalPlayer.Character)) then
                     res[k] = v
                 else
                     res[k] = newModel
                 end
-            elseif type(v) == "string" and #v > 15 and runtimeId then
-                res[k] = runtimeId
+            elseif typeof(v) == "CFrame" and targetRoot then
+                res[k] = targetRoot.CFrame
+            elseif typeof(v) == "Vector3" and targetRoot then
+                res[k] = targetRoot.Position
+            elseif type(v) == "string" or type(v) == "number" then
+                local strVal = tostring(v)
+                if type(v) == "number" and v < 10 then
+                    res[k] = v
+                else
+                    local replaced = false
+                    if recordedIDsList and #recordedIDsList > 0 then
+                        for i, oldID in ipairs(recordedIDsList) do
+                            if strVal == tostring(oldID) and #strVal > 2 then
+                                if newMatchIDs and newMatchIDs[i] then
+                                    res[k] = newMatchIDs[i]
+                                else
+                                    res[k] = newPrimaryID or newModel.Name
+                                end
+                                replaced = true
+                                break
+                            end
+                        end
+                    end
+                    if not replaced then
+                        if (strVal:find("-") or #strVal >= 5 or strVal:find("Tower")) and newPrimaryID then
+                            res[k] = newPrimaryID
+                        else
+                            res[k] = v
+                        end
+                    end
+                end
+            elseif type(v) == "table" then
+                res[k] = processTable(v)
             else
                 res[k] = v
             end
         end
         return res
     end
-    
-    if type(oldArgs) == "table" then
-        return recursiveProcess(oldArgs)
-    else
-        return {newModel}
-    end
+    return processTable(oldArgs)
 end
 
--- HOOK RECORDING
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -685,59 +738,77 @@ if not getgenv().MacroHookedTD then
                         local timeStamp = tick() - recordStartTime
                         local cashBefore = getPlayerCash()
                         
-                        task.wait(0.35)
-                        local cashAfter = getPlayerCash()
-                        local cashDiff = cashBefore - cashAfter
-                        
                         if rName == "TowerAdd" then
+                            towerCounter = towerCounter + 1
+                            local currentIdx = towerCounter
                             local cf = getCFrameFromArgs(args)
+                            
+                            task.wait(0.4)
+                            local cashAfter = getPlayerCash()
+                            local cost = cashBefore - cashAfter
                             local newlySpawnedModel = findTowerNearPosition(cf)
                             
-                            if (cashDiff > 0 and cashDiff < 100000) or newlySpawnedModel then
-                                towerCounter = towerCounter + 1
-                                local currentIdx = towerCounter
-                                
-                                if not cf and newlySpawnedModel then
-                                    cf = newlySpawnedModel:GetPivot()
-                                end
-                                
-                                recordedTowers[currentIdx] = { 
-                                    Index = currentIdx, 
-                                    PositionCF = cf, 
-                                    Model = newlySpawnedModel
-                                }
-                                
-                                local actionEntry = {
-                                    Type = "ADD", Time = timeStamp, Remote = self, Method = method,
-                                    Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = (cashDiff > 0 and cashDiff) or 150
-                                }
-                                table.insert(recordedData, actionEntry)
-                                logConsole(string.format("[Rec Valid] TowerAdd #%d", currentIdx))
+                            if not cf and newlySpawnedModel then
+                                cf = newlySpawnedModel:GetPivot()
                             end
                             
-                        elseif rName == "TowerUpgrade" then
-                            if cashDiff > 0 and cashDiff < 100000 then
-                                local targetIdx = resolveTargetIndex(args, nil, nil)
-                                local actionEntry = {
-                                    Type = "UPGRADE", Time = timeStamp, Remote = self, Method = method,
-                                    Args = serializeVal(args), TargetIndex = targetIdx, CashCost = cashDiff,
-                                    PositionCF = recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF or nil
-                                }
-                                table.insert(recordedData, actionEntry)
-                                logConsole(string.format("[Rec Valid] UPGRADE Tower #%d", targetIdx))
+                            recordedTowers[currentIdx] = { 
+                                Index = currentIdx, 
+                                PositionCF = cf, 
+                                IDs = newlySpawnedModel and extractAllIDsFromModel(newlySpawnedModel) or {},
+                                Model = newlySpawnedModel
+                            }
+                            
+                            local actionEntry = {
+                                Type = "ADD", Time = timeStamp, Remote = self, Method = method,
+                                Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = 150,
+                                TowerIDs = recordedTowers[currentIdx].IDs
+                            }
+                            table.insert(recordedData, actionEntry)
+                            local entryIndex = #recordedData
+                            
+                            if (cost > 0 and cost < 100000) or newlySpawnedModel then
+                                if cost > 0 and cost < 100000 then actionEntry.CashCost = cost end
+                                logConsole(string.format("[Rec] TowerAdd #%d Sukses (Cost: %d)", currentIdx, actionEntry.CashCost))
+                            else
+                                table.remove(recordedData, entryIndex)
+                                recordedTowers[currentIdx] = nil
+                                towerCounter = towerCounter - 1
+                                logConsole("[Rec] TowerAdd Gagal/Dibatalkan (Dihapus dari rekaman)")
                             end
                             
-                        elseif rName == "TowerSell" then
-                            if cashDiff < 0 then
-                                local targetIdx = resolveTargetIndex(args, nil, nil)
-                                local earnedCash = math.abs(cashDiff)
-                                local actionEntry = {
-                                    Type = "SELL", Time = timeStamp, Remote = self, Method = method,
-                                    Args = serializeVal(args), TargetIndex = targetIdx, CashCost = earnedCash,
-                                    PositionCF = recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF or nil
-                                }
-                                table.insert(recordedData, actionEntry)
-                                logConsole(string.format("[Rec Valid] SELL Tower #%d", targetIdx))
+                        elseif rName == "TowerUpgrade" or rName == "TowerSell" then
+                            local targetModel = getTowerFromArgs(args)
+                            local targetIdx = resolveTargetIndex(args, targetModel, nil)
+                            local actionType = (rName == "TowerUpgrade" and "UPGRADE" or "SELL")
+                            local targetIDs = recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs or nil
+                            
+                            local actionEntry = {
+                                Type = actionType, Time = timeStamp, Remote = self, Method = method,
+                                Args = serializeVal(args), TargetIndex = targetIdx, CashCost = 150,
+                                TowerIDs = targetIDs, PositionCF = targetModel and targetModel:GetPivot() or nil
+                            }
+                            table.insert(recordedData, actionEntry)
+                            local entryIndex = #recordedData
+                            
+                            task.wait(0.4)
+                            local cashAfter = getPlayerCash()
+                            local cost = cashBefore - cashAfter
+                            
+                            local isSuccess = false
+                            if rName == "TowerUpgrade" and cost > 0 and cost < 100000 then
+                                isSuccess = true
+                                actionEntry.CashCost = cost
+                            elseif rName == "TowerSell" and cost < 0 then
+                                isSuccess = true
+                                actionEntry.CashCost = math.abs(cost)
+                            end
+                            
+                            if isSuccess then
+                                logConsole(string.format("[Rec] %s -> Tower #%d Sukses", rName, targetIdx))
+                            else
+                                table.remove(recordedData, entryIndex)
+                                logConsole(string.format("[Rec] %s Gagal/Dibatalkan (Dihapus dari rekaman)", rName))
                             end
                         end
                     end)
@@ -762,11 +833,10 @@ recordBtn.MouseButton1Click:Connect(function()
     else
         recordBtn.Text = "Record: OFF"
         recordBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
-        logConsole(string.format("RECORDING STOPPED. Total Aksi: %d", #recordedData))
+        logConsole("RECORDING STOPPED. Total: " .. #recordedData)
     end
 end)
 
--- PLAYBACK DENGAN ERROR LOGGING LANGSUNG KE KONSOL UI
 function startPlayback()
     if #recordedData == 0 then
         logConsole("Data rekaman kosong!")
@@ -776,38 +846,48 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (" .. #recordedData .. " Aksi)...")
     
-    applyGameSpeed(selectedSpeed)
+    -- Tentukan multiplier kecepatan game saat playback
+    local currentSpeed = 1
+    if speed15Active then 
+        currentSpeed = 1.5
+        setGameSpeed(1.5)
+    elseif speed20Active then 
+        currentSpeed = 2 
+        setGameSpeed(2)
+    else
+        setGameSpeed(1)
+    end
+    
+    logConsole(string.format("PLAYBACK STARTED (Speed: %.1fx, Anti-Double & Match ID Active)...", currentSpeed))
     
     task.spawn(function()
         local playbackStart = tick()
         local sessionTowers = {}
+        local sessionTowerIDs = {}
         
         for index, action in ipairs(recordedData) do
             if not isPlaying then break end
-            local waitTime = (action.Time - (tick() - playbackStart)) / selectedSpeed
+            
+            -- Waktu tunggu disesuaikan dengan kecepatan game (dibagi currentSpeed)
+            local targetTime = action.Time / currentSpeed
+            local waitTime = targetTime - (tick() - playbackStart)
             if waitTime > 0 then task.wait(waitTime) end
             if not isPlaying then break end
             
-            local successRun, runErr = pcall(function()
+            pcall(function()
                 local remoteObj = action.Remote or ReplicatedStorage:FindFirstChild(action.RemoteName, true)
                 local realArgs = deserializeVal(action.Args)
                 local requiredCost = action.CashCost or 100
-                local aType = string.upper(tostring(action.Type))
 
-                if not remoteObj then
-                    logConsole(string.format("[%d/%d] Error: Remote '%s' tidak ditemukan!", index, #recordedData, tostring(action.RemoteName)))
-                    return
-                end
-
-                if aType == "ADD" then
+                if action.Type == "ADD" then
                     local newlySpawnedModel = nil
                     local hasFired = false
                     
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
-                            task.wait(0.5 / selectedSpeed)
+                            logConsole(string.format("[%d/%d] Menunggu Cash Place (Butuh: %d | Cash: %d)...", index, #recordedData, requiredCost, getPlayerCash()))
+                            task.wait(1)
                         end
                         if not isPlaying then return end
 
@@ -820,13 +900,13 @@ function startPlayback()
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
                             else remoteObj:FireServer(unpack(realArgs)) end
                             hasFired = true
-                            task.wait(0.2 / selectedSpeed)
+                            task.wait(0.3 / currentSpeed)
                         end
                         
                         local timer = 0
                         repeat
-                            task.wait(0.1 / selectedSpeed)
-                            timer = timer + (0.1 / selectedSpeed)
+                            task.wait(0.1)
+                            timer = timer + 0.1
                             for _, v in ipairs(Workspace:GetDescendants()) do
                                 if v:IsA("Model") and not beforeSnapshot[v] and v ~= LocalPlayer.Character then
                                     if getRootFromModel(v) then
@@ -834,74 +914,82 @@ function startPlayback()
                                     end
                                 end
                             end
-                        until newlySpawnedModel or timer >= (2.0 / selectedSpeed)
+                        until newlySpawnedModel or timer >= (2.0 / currentSpeed)
                         
                         if not newlySpawnedModel and action.PositionCF then
                             local excludeInstances = {}
                             for _, t in pairs(sessionTowers) do excludeInstances[t] = true end
                             newlySpawnedModel = findTowerNearPosition(action.PositionCF, excludeInstances)
                         end
+                        
+                        if not newlySpawnedModel then
+                            logConsole(string.format("[%d/%d] PLACE Tower #%d Menunggu Model...", index, #recordedData, action.TowerIndex or action.TargetIndex))
+                            task.wait(0.5 / currentSpeed)
+                        end
                     until newlySpawnedModel or not isPlaying
 
                     if newlySpawnedModel then
                         local tIdx = action.TowerIndex or action.TargetIndex or 1
                         sessionTowers[tIdx] = newlySpawnedModel
-                        task.wait(0.2)
+                        sessionTowerIDs[tIdx] = extractAllIDsFromModel(newlySpawnedModel)
                         logConsole(string.format("[%d/%d] PLACE Tower #%d OK", index, #recordedData, tIdx))
                     end
 
-                elseif aType == "UPGRADE" or aType == "SELL" then
+                elseif action.Type == "UPGRADE" or action.Type == "SELL" then
                     local targetIdx = action.TargetIndex or action.TowerIndex or 1
-                    local currentModel = nil
                     
-                    -- Coba cari model tower dengan retry singkat agar tidak terlewat
-                    local retryFind = 0
+                    local successAction = false
                     repeat
-                        currentModel = sessionTowers[targetIdx]
+                        while isPlaying and getPlayerCash() < requiredCost do
+                            logConsole(string.format("[%d/%d] Menunggu Cash %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
+                            task.wait(1)
+                        end
+                        if not isPlaying then return end
+
+                        local currentModel = sessionTowers[targetIdx]
                         if not currentModel or not currentModel.Parent then
                             if recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
                                 currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF)
                             elseif action.PositionCF then
                                 currentModel = findTowerNearPosition(action.PositionCF)
+                            else
+                                local cfFromArgs = getCFrameFromArgs(realArgs)
+                                if cfFromArgs then
+                                    currentModel = findTowerNearPosition(cfFromArgs)
+                                end
                             end
                         end
-                        if not currentModel then
-                            retryFind = retryFind + 1
-                            task.wait(0.3 / selectedSpeed)
-                        end
-                    until currentModel or retryFind >= 5 or not isPlaying
-                    
-                    if currentModel then
-                        while isPlaying and aType == "UPGRADE" and getPlayerCash() < requiredCost do
-                            task.wait(0.5 / selectedSpeed)
-                        end
-                        if not isPlaying then return end
-
-                        task.wait(0.1 / selectedSpeed)
-                        local playArgs = rebuildArgsForPlayback(realArgs, currentModel)
                         
-                        local invokedOk, invokeErr = pcall(function()
-                            if action.Method == "InvokeServer" then 
-                                remoteObj:InvokeServer(unpack(playArgs))
-                            else 
-                                remoteObj:FireServer(unpack(playArgs)) 
+                        if currentModel then
+                            task.wait(0.15 / currentSpeed)
+                            local cashBeforePlay = getPlayerCash()
+                            
+                            local currentMatchIDs = sessionTowerIDs[targetIdx] or extractAllIDsFromModel(currentModel)
+                            local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel, currentMatchIDs)
+                            
+                            if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
+                            else remoteObj:FireServer(unpack(playArgs)) end
+                            
+                            task.wait(0.35 / currentSpeed)
+                            local cashAfterPlay = getPlayerCash()
+                            
+                            if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
+                                successAction = true
+                                logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE", index, #recordedData, targetIdx))
+                            elseif action.Type == "SELL" and cashBeforePlay < cashAfterPlay then
+                                successAction = true
+                                logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
+                            else
+                                logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server, Mencoba Lagi...", index, #recordedData, action.Type, targetIdx))
+                                task.wait(0.5 / currentSpeed)
                             end
-                        end)
-                        
-                        if invokedOk then
-                            logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, aType, targetIdx))
                         else
-                            logConsole(string.format("[%d/%d] Gagal Kirim %s Tower #%d: %s", index, #recordedData, aType, targetIdx, tostring(invokeErr)))
+                            logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
+                            task.wait(1 / currentSpeed)
                         end
-                    else
-                        logConsole(string.format("[%d/%d] %s Tower #%d Gagal (Model Tower Tidak Ditemukan)", index, #recordedData, aType, targetIdx))
-                    end
+                    until successAction or not isPlaying
                 end
             end)
-            
-            if not successRun then
-                logConsole(string.format("[%d/%d] Critical Error: %s", index, #recordedData, tostring(runErr)))
-            end
         end
         
         isPlaying = false
@@ -923,38 +1011,15 @@ playBtn.MouseButton1Click:Connect(function()
     startPlayback()
 end)
 
--- OTOMATISASI MATCH BARU
-task.spawn(function()
-    while true do
-        task.wait(3)
-        if autoPlayMatch and not isPlaying then
-            local matchStarted = false
-            pcall(function()
-                local pg = LocalPlayer:FindFirstChild("PlayerGui")
-                if pg then
-                    for _, gui in ipairs(pg:GetDescendants()) do
-                        if gui:IsA("TextLabel") or gui:IsA("TextButton") then
-                            local txt = gui.Text:lower()
-                            if txt:find("wave") or txt:find("toilet") or txt:find("units:") or txt:find("completed") then
-                                matchStarted = true
-                                break
-                            end
-                        end
-                    end
-                end
-            end)
-            
-            if matchStarted then
-                logConsole("Match/Replay baru terdeteksi! Memuat makro otomatis...")
-                task.wait(2)
-                if loadMacroFromFile(nameBox.Text) then
-                    startPlayback()
-                    task.wait(20)
-                end
-            end
-        end
-    end
-end)
-
 loadConfig()
 logConsole("Macro Ready.")
+
+if autoPlayOnRejoin then
+    task.spawn(function()
+        logConsole("Auto Play Rejoin Aktif. Memuat file...")
+        task.wait(2)
+        if loadMacroFromFile(nameBox.Text) then
+            startPlayback()
+        end
+    end)
+end
