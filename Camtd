@@ -1,4 +1,4 @@
--- Macro TD v34.3 - Fixed UI Syntax Error, Filtered Recording & Auto-Retry
+-- Macro TD v34.4 - UI Fixed, Smart Filtered Recording & Delete Macro
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -153,7 +153,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.3 (Fixed)"
+title.Text = "Macro TD v34.4 (UI Fixed & Filtered)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -627,7 +627,7 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     return processTable(oldArgs)
 end
 
--- Hook Remote dengan Validasi Sukses/Gagal
+-- Hook Remote Aman & Asinkron (Menjamin UI tidak lag/error)
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -638,91 +638,87 @@ if not getgenv().MacroHookedTD then
         if isRecording and (method == "FireServer" or method == "InvokeServer") then
             local rName = self.Name
             if rName == "TowerAdd" or rName == "TowerUpgrade" or rName == "TowerSell" then
-                local timeStamp = tick() - recordStartTime
-                local cashBefore = getPlayerCash()
-                
-                if rName == "TowerAdd" then
-                    local cf = getCFrameFromArgs(args)
-                    local beforeSnapshot = {}
-                    for _, v in ipairs(Workspace:GetDescendants()) do
-                        if v:IsA("Model") then beforeSnapshot[v] = true end
-                    end
-                    
-                    task.spawn(function()
-                        task.wait(0.4)
-                        local cashAfter = getPlayerCash()
-                        local cost = cashBefore - cashAfter
+                task.spawn(function()
+                    pcall(function()
+                        local timeStamp = tick() - recordStartTime
+                        local cashBefore = getPlayerCash()
                         
-                        local newlySpawnedModel = nil
-                        for _, v in ipairs(Workspace:GetDescendants()) do
-                            if v:IsA("Model") and not beforeSnapshot[v] and v ~= LocalPlayer.Character then
-                                if getRootFromModel(v) then
-                                    newlySpawnedModel = v
-                                    break
-                                end
-                            end
-                        end
-                        
-                        if not newlySpawnedModel and cf then
-                            newlySpawnedModel = findTowerNearPosition(cf)
-                        end
-                        
-                        if newlySpawnedModel or (cost > 0 and cost < 100000) then
+                        if rName == "TowerAdd" then
                             towerCounter = towerCounter + 1
                             local currentIdx = towerCounter
-                            if not cf and newlySpawnedModel then
-                                cf = newlySpawnedModel:GetPivot()
+                            local cf = getCFrameFromArgs(args)
+                            
+                            if not cf then
+                                task.wait(0.1)
+                                local char = LocalPlayer.Character
+                                local root = char and char:FindFirstChild("HumanoidRootPart")
+                                local model = findTowerNearPosition(root and root.Position or Vector3.new(0,0,0))
+                                if model then cf = model:GetPivot() end
                             end
                             
                             recordedTowers[currentIdx] = { Index = currentIdx, PositionCF = cf, IDs = {} }
-                            if newlySpawnedModel then
-                                recordedTowers[currentIdx].IDs = extractAllIDsFromModel(newlySpawnedModel)
+                            
+                            -- Masukkan sementara ke rekaman
+                            local actionEntry = {
+                                Type = "ADD", Time = timeStamp, Remote = self, Method = method,
+                                Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = 150
+                            }
+                            table.insert(recordedData, actionEntry)
+                            local entryIndex = #recordedData
+                            
+                            task.wait(0.4)
+                            local cashAfter = getPlayerCash()
+                            local cost = cashBefore - cashAfter
+                            local model = findTowerNearPosition(cf)
+                            
+                            -- Verifikasi apakah sukses (uang berkurang atau model spawn)
+                            if (cost > 0 and cost < 100000) or model then
+                                if cost > 0 and cost < 100000 then actionEntry.CashCost = cost end
+                                if model then recordedTowers[currentIdx].IDs = extractAllIDsFromModel(model) end
+                                logConsole(string.format("[Rec] TowerAdd #%d Sukses (Cost: %d)", currentIdx, actionEntry.CashCost))
+                            else
+                                -- Jika gagal, hapus dari data rekaman
+                                table.remove(recordedData, entryIndex)
+                                recordedTowers[currentIdx] = nil
+                                towerCounter = towerCounter - 1
+                                logConsole("[Rec] TowerAdd Gagal/Dibatalkan (Dihapus dari rekaman)")
                             end
                             
-                            local finalCost = (cost > 0 and cost < 100000) and cost or 200
-                            table.insert(recordedData, {
-                                Type = "ADD", Time = timeStamp, Remote = self, Method = method,
-                                Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = finalCost
-                            })
-                            logConsole(string.format("[Rec] TowerAdd #%d Sukses (Cost: %d)", currentIdx, finalCost))
-                        else
-                            logConsole("[Rec] TowerAdd Gagal/Dibatalkan (Tidak direkam)")
-                        end
-                    end)
-                    
-                elseif rName == "TowerUpgrade" or rName == "TowerSell" then
-                    local targetIdx = resolveTargetIndexByPlayerProximity()
-                    
-                    task.spawn(function()
-                        task.wait(0.4)
-                        local cashAfter = getPlayerCash()
-                        local cost = cashBefore - cashAfter
-                        
-                        local isSuccess = false
-                        local actionType = (rName == "TowerUpgrade" and "UPGRADE" or "SELL")
-                        
-                        if rName == "TowerUpgrade" and cost > 0 and cost < 100000 then
-                            isSuccess = true
-                        elseif rName == "TowerSell" and cost < 0 then
-                            isSuccess = true
-                        end
-                        
-                        if isSuccess then
-                            local finalCost = (rName == "TowerUpgrade") and cost or 150
+                        elseif rName == "TowerUpgrade" or rName == "TowerSell" then
+                            local targetIdx = resolveTargetIndexByPlayerProximity()
+                            local actionType = (rName == "TowerUpgrade" and "UPGRADE" or "SELL")
                             local targetIDs = recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs or nil
                             
-                            table.insert(recordedData, {
-                                Type = actionType,
-                                Time = timeStamp, Remote = self, Method = method,
-                                Args = serializeVal(args), TargetIndex = targetIdx, CashCost = finalCost,
+                            local actionEntry = {
+                                Type = actionType, Time = timeStamp, Remote = self, Method = method,
+                                Args = serializeVal(args), TargetIndex = targetIdx, CashCost = 150,
                                 TowerIDs = targetIDs
-                            })
-                            logConsole(string.format("[Rec] %s -> Tower #%d Sukses", rName, targetIdx))
-                        else
-                            logConsole(string.format("[Rec] %s Gagal/Dibatalkan (Tidak direkam)", rName))
+                            }
+                            table.insert(recordedData, actionEntry)
+                            local entryIndex = #recordedData
+                            
+                            task.wait(0.4)
+                            local cashAfter = getPlayerCash()
+                            local cost = cashBefore - cashAfter
+                            
+                            local isSuccess = false
+                            if rName == "TowerUpgrade" and cost > 0 and cost < 100000 then
+                                isSuccess = true
+                                actionEntry.CashCost = cost
+                            elseif rName == "TowerSell" and cost < 0 then
+                                isSuccess = true
+                                actionEntry.CashCost = math.abs(cost)
+                            end
+                            
+                            if isSuccess then
+                                logConsole(string.format("[Rec] %s -> Tower #%d Sukses", rName, targetIdx))
+                            else
+                                table.remove(recordedData, entryIndex)
+                                logConsole(string.format("[Rec] %s Gagal/Dibatalkan (Dihapus dari rekaman)", rName))
+                            end
                         end
                     end)
-                end
+                end)
             end
         end
         return oldNamecall(self, ...)
@@ -833,7 +829,7 @@ function startPlayback()
 
                         local currentModel = sessionTowers[targetIdx]
                         if not currentModel and recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
-                            local excludeInstances = {} -- DIPERBAIKI: Menggunakan 'local' bukan 'let'
+                            local excludeInstances = {}
                             for k, t in pairs(sessionTowers) do 
                                 if k ~= targetIdx then excludeInstances[t] = true end 
                             end
