@@ -1,4 +1,4 @@
--- Macro TD v34.28 - Precise Argument Mapping & Stable Upgrade Fix
+-- Macro TD v34.29 - String ID & Attribute Upgrade Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.28 (Precise Upgrade Fix)"
+title.Text = "Macro TD v34.29 (String ID Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -195,7 +195,7 @@ UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 UIListLayout.Padding = UDim.new(0, 2)
 
 local function logConsole(msg)
-    print("[MACRO TD]: " .. msg)
+    print("[MACRO TD]: " + msg)
     local logText = Instance.new("TextLabel")
     logText.Size = UDim2.new(1, -10, 0, 16)
     logText.BackgroundTransparency = 1
@@ -580,6 +580,26 @@ local function getCFrameFromArgs(args)
     return nil
 end
 
+local function extractAllIDsFromModel(inst)
+    if not inst or not inst:IsA("Instance") then return {} end
+    local ids = {inst.Name}
+    for k, v in pairs(inst:GetAttributes()) do
+        if type(v) == "string" or type(v) == "number" then table.insert(ids, tostring(v)) end
+    end
+    for _, child in ipairs(inst:GetDescendants()) do
+        if child:IsA("ValueBase") and child.Value then table.insert(ids, tostring(child.Value)) end
+    end
+    return ids
+end
+
+local function getPrimaryID(inst)
+    if not inst or not inst:IsA("Instance") then return nil end
+    for k, v in pairs(inst:GetAttributes()) do
+        if k:lower():find("id") or k:lower():find("uuid") then return tostring(v) end
+    end
+    return inst.Name
+end
+
 local function findTowerNearPosition(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
@@ -639,15 +659,17 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     return 1
 end
 
--- Rekonstruksi argumen secara presisi: Mengganti instance lama dengan model baru tanpa menghapus parameter lain (seperti angka path upgrade)
-local function rebuildArgsForPlayback(oldArgs, newModel)
+-- PENGAMBILAN IDENTIFIER AMAN: Menggunakan ID string/atribut dari model agar server tidak menolak objek model fisik
+local function rebuildArgsForPlayback(oldArgs, newModel, recordedIDs)
     if not newModel then return oldArgs end
+    local primaryID = getPrimaryID(newModel)
+    
     local function processTable(tbl)
         local res = {}
         for k, v in pairs(tbl) do
             if type(v) == "table" then
                 if v.__isSerializedInstance then
-                    res[k] = newModel
+                    res[k] = primaryID or newModel -- Mengirim ID string/atribut utama alih-alih model mentah
                 else
                     res[k] = processTable(v)
                 end
@@ -655,8 +677,18 @@ local function rebuildArgsForPlayback(oldArgs, newModel)
                 if v:IsA("Player") or v == LocalPlayer or (LocalPlayer.Character and v:IsDescendantOf(LocalPlayer.Character)) then
                     res[k] = v
                 else
-                    res[k] = newModel
+                    res[k] = primaryID or newModel
                 end
+            elseif type(v) == "string" and recordedIDs then
+                local matched = false
+                for _, oldID in ipairs(recordedIDs) do
+                    if v == tostring(oldID) and #v > 3 then
+                        res[k] = primaryID or v
+                        matched = true
+                        break
+                    end
+                end
+                if not matched then res[k] = v end
             else
                 res[k] = v
             end
@@ -666,15 +698,14 @@ local function rebuildArgsForPlayback(oldArgs, newModel)
     
     if type(oldArgs) == "table" then
         local newArgs = processTable(oldArgs)
-        -- Pastikan argumen pertama diubah ke model baru jika argumen pertama berupa instance/model lama
-        if #newArgs > 0 and (typeof(newArgs[1]) ~= "number") then
-            newArgs[1] = newModel
+        if #newArgs > 0 and type(newArgs[1]) ~= "number" then
+            newArgs[1] = primaryID or newModel
         elseif #newArgs == 0 then
-            newArgs[1] = newModel
+            newArgs[1] = primaryID or newModel
         end
         return newArgs
     else
-        return {newModel}
+        return {primaryID or newModel}
     end
 end
 
@@ -801,7 +832,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Precise Mapping Active)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - String ID Active)...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -904,20 +935,19 @@ function startPlayback()
                         if currentModel then
                             task.wait(0.2 / selectedSpeed)
                             local cashBeforePlay = getPlayerCash()
-                            local playArgs = rebuildArgsForPlayback(realArgs, currentModel)
+                            local playArgs = rebuildArgsForPlayback(realArgs, currentModel, action.TowerIDs)
                             
-                            -- PENGIRIMAN AMAN DENGAN BERBAGAI VARIASI ARGUMEN
+                            -- PENGIRIMAN MULTI-VARIASI UNTUK MEMASTIKAN SERVER MENERIMA ID/MODEL
                             pcall(function()
                                 if retryCount <= 2 then
                                     if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
                                     else remoteObj:FireServer(unpack(playArgs)) end
                                 elseif retryCount <= 5 then
-                                    -- Percobaan alternatif jika argumen tabel ditolak
                                     if action.Method == "InvokeServer" then remoteObj:InvokeServer(currentModel)
                                     else remoteObj:FireServer(currentModel) end
                                 else
-                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(currentModel, 1)
-                                    else remoteObj:FireServer(currentModel, 1) end
+                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(targetIdx, currentModel)
+                                    else remoteObj:FireServer(targetIdx, currentModel) end
                                 end
                             end)
                             
