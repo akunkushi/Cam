@@ -1,4 +1,4 @@
--- Macro TD v34.37 - Deep Table Diagnostic & Post-Update Fix
+-- Macro TD v34.38 - Dynamic Runtime UUID Fix for Post-Update
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -19,14 +19,14 @@ pcall(function()
     end
 end)
 
--- ==================== UI PEMBUATAN UTAMA (MOBILE SAFE) ====================
+-- ==================== UI PEMBUATAN UTAMA ====================
 local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-if playerGui:FindFirstChild("MacroGameplayGUI_v37") then
-    playerGui.MacroGameplayGUI_v37:Destroy()
+if playerGui:FindFirstChild("MacroGameplayGUI_v38") then
+    playerGui.MacroGameplayGUI_v38:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v37"
+screenGui.Name = "MacroGameplayGUI_v38"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = playerGui
 
@@ -47,7 +47,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v37 (Deep Diagnostic)"
+title.Text = "Macro TD v38 (Dynamic UUID Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -643,9 +643,46 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     return 1
 end
 
--- PEREKONSTRUKSI ARGUMEN CERDAS POST-UPDATE
-local function rebuildArgsForPlayback(oldArgs, newModel)
+-- PENCARIAN ID RUNTIME: Mengambil string ID (UUID) dari model tower di sesi game saat ini secara otomatis
+local function extractRuntimeIdFromModel(model)
+    if not model then return nil end
+    -- Cek apakah ada atribut atau nilai string di dalam model yang menyerupai UUID
+    for _, attrName in ipairs(model:GetAttributeList()) do
+        local val = model:GetAttribute(attrName)
+        if type(val) == "string" and #val > 15 then
+            return val
+        end
+    end
+    for _, desc in ipairs(model:GetDescendants()) do
+        if desc:IsA("StringValue") and #desc.Value > 15 then
+            return desc.Value
+        end
+    end
+    -- Jika tidak ketemu lewat atribut/string value, ambil nama atau identifikasi unik yang ada di model
+    return nil
+end
+
+local function rebuildArgsForPlaybackWithDynamicId(oldArgs, newModel)
     if not newModel then return oldArgs end
+    
+    -- Cari runtime ID dari model saat ini di sesi game berjalan
+    local runtimeId = nil
+    for _, attrName in ipairs(newModel:GetAttributeList()) do
+        local val = newModel:GetAttribute(attrName)
+        if type(val) == "string" and #val > 15 then
+            runtimeId = val
+            break
+        end
+    end
+    if not runtimeId then
+        for _, desc in ipairs(newModel:GetDescendants()) do
+            if desc:IsA("StringValue") and #desc.Value > 15 then
+                runtimeId = desc.Value
+                break
+            end
+        end
+    end
+
     local function recursiveProcess(tbl)
         local res = {}
         for k, v in pairs(tbl) do
@@ -661,6 +698,9 @@ local function rebuildArgsForPlayback(oldArgs, newModel)
                 else
                     res[k] = newModel
                 end
+            elseif type(v) == "string" and #v > 15 and runtimeId then
+                -- Timpa string ID lama dengan runtime ID dinamis dari sesi game saat ini!
+                res[k] = runtimeId
             else
                 res[k] = v
             end
@@ -675,20 +715,6 @@ local function rebuildArgsForPlayback(oldArgs, newModel)
     end
 end
 
--- Fungsi bantu untuk mencetak isi tabel secara mendalam ke konsol (F9)
-local function printTableDeep(tbl, indent)
-    indent = indent or ""
-    for k, v in pairs(tbl) do
-        if type(v) == "table" then
-            print(indent .. tostring(k) .. " = {")
-            printTableDeep(v, indent .. "  ")
-            print(indent .. "}")
-        else
-            print(indent .. tostring(k) .. " = " .. tostring(v) .. " (" .. typeof(v) .. ")")
-        end
-    end
-end
-
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -696,23 +722,9 @@ if not getgenv().MacroHookedTD then
         local method = getnamecallmethod()
         local args = {...}
         
-        if method == "FireServer" or method == "InvokeServer" then
+        if isRecording and (method == "FireServer" or method == "InvokeServer") then
             local rName = self.Name
-            if rName == "TowerUpgrade" or rName == "TowerSell" then
-                print("========================================")
-                print("[DEEP DIAGNOSTIC] Remote:", rName, "Method:", method)
-                for i, v in ipairs(args) do
-                    print(string.format("Argument #%d (Tipe: %s):", i, typeof(v)))
-                    if type(v) == "table" then
-                        printTableDeep(v, "  ")
-                    else
-                        print("  Value:", tostring(v))
-                    end
-                end
-                print("========================================")
-            end
-            
-            if isRecording and (rName == "TowerAdd" or rName == "TowerUpgrade" or rName == "TowerSell") then
+            if rName == "TowerAdd" or rName == "TowerUpgrade" or rName == "TowerSell" then
                 task.spawn(function()
                     pcall(function()
                         local timeStamp = tick() - recordStartTime
@@ -823,7 +835,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. ")...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Dynamic UUID Fix)...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -926,18 +938,14 @@ function startPlayback()
                         if currentModel then
                             task.wait(0.2 / selectedSpeed)
                             local cashBeforePlay = getPlayerCash()
-                            local playArgs = rebuildArgsForPlayback(realArgs, currentModel)
+                            -- Mengganti ID string lama dengan ID runtime aktif dari sesi saat ini secara otomatis
+                            local playArgs = rebuildArgsForPlaybackWithDynamicId(realArgs, currentModel)
                             
                             pcall(function()
-                                if retryCount <= 2 then
-                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
-                                    else remoteObj:FireServer(unpack(playArgs)) end
-                                elseif retryCount <= 5 then
-                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(currentModel)
-                                    else remoteObj:FireServer(currentModel) end
-                                else
-                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(targetIdx, currentModel)
-                                    else remoteObj:FireServer(targetIdx, currentModel) end
+                                if action.Method == "InvokeServer" then 
+                                    remoteObj:InvokeServer(unpack(playArgs))
+                                else 
+                                    remoteObj:FireServer(unpack(playArgs)) 
                                 end
                             end)
                             
