@@ -1,4 +1,4 @@
--- Macro TD v34.20 - Auto Play on New Match Detection & Stable Upgrade
+-- Macro TD v34.21 - Enhanced Match Detector & Stable Upgrade
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.20 (Auto Match Detector)"
+title.Text = "Macro TD v34.21 (Enhanced Match Detector)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -195,7 +195,7 @@ UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 UIListLayout.Padding = UDim.new(0, 2)
 
 local function logConsole(msg)
-    print("[MACRO TD]: " + msg)
+    print("[MACRO TD]: " .. msg)
     local logText = Instance.new("TextLabel")
     logText.Size = UDim2.new(1, -10, 0, 16)
     logText.BackgroundTransparency = 1
@@ -262,7 +262,7 @@ local function getPlayerCash()
         local pg = LocalPlayer:FindFirstChild("PlayerGui")
         if pg then
             for _, gui in ipairs(pg:GetDescendants()) do
-                if gui:IsA("TextLabel") then
+                if gui:IsA("TextLabel") or gui:IsA("TextButton") then
                     local nameLower = gui.Name:lower()
                     local text = gui.Text
                     if nameLower:find("cash") or nameLower:find("money") or nameLower:find("coin") or nameLower:find("balance") then
@@ -1021,7 +1021,7 @@ playBtn.MouseButton1Click:Connect(function()
     startPlayback()
 end)
 
--- FITUR AUTO PLAY MATCH BARU (Mendeteksi match/replay baru secara otomatis)
+-- PENINGKATAN AUTO PLAY MATCH: Deteksi lebih fleksibel (mendeteksi kata wave, toilet, units, atau status gameplay aktif)
 task.spawn(function()
     while true do
         task.wait(3)
@@ -1031,10 +1031,10 @@ task.spawn(function()
                 local pg = LocalPlayer:FindFirstChild("PlayerGui")
                 if pg then
                     for _, gui in ipairs(pg:GetDescendants()) do
-                        if gui:IsA("TextLabel") then
+                        if gui:IsA("TextLabel") or gui:IsA("TextButton") then
                             local txt = gui.Text:lower()
-                            -- Mendeteksi teks indikator permainan baru (misal: Wave 1, Wave started, dll)
-                            if txt:find("wave 1") or txt:find("wave started") or txt:find("toilets:") then
+                            -- Memeriksa berbagai indikator umum di layar saat match berjalan
+                            if txt:find("wave") or txt:find("toilet") or txt:find("units:") or txt:find("completed") then
                                 matchStarted = true
                                 break
                             end
@@ -1045,11 +1045,11 @@ task.spawn(function()
             
             if matchStarted then
                 logConsole("Match/Replay baru terdeteksi! Memuat makro otomatis...")
-                task.wait(2) -- Jeda stabilisasi awal match
+                task.wait(2)
                 if loadMacroFromFile(nameBox.Text) then
                     startPlayback()
-                    -- Jeda agar tidak mendeteksi match yang sama berulang kali dalam satu sesi
-                    task.wait(15)
+                    -- Jeda lebih lama agar tidak mendeteksi ulang match yang sama secara beruntun
+                    task.wait(20)
                 end
             end
         end
