@@ -1,4 +1,4 @@
--- Macro TD v34.10 - Priority UI Load, Safe Buffer & Precise Targeting
+-- Macro TD v34.11 - Verified Playback Upgrade/Sell & Priority UI
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -19,7 +19,7 @@ pcall(function()
     end
 end)
 
--- ==================== UI PEMBUATAN UTAMA (DIPINDAH KE ATAS) ====================
+-- ==================== UI PEMBUATAN UTAMA ====================
 local function getGuiParent()
     local success, hui = pcall(function() return gethui and gethui() end)
     if success and hui then return hui end
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.10 (UI Priority)"
+title.Text = "Macro TD v34.11 (Verified Playback)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -810,7 +810,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Safe Rate-Limit Buffer Active)...")
+    logConsole("PLAYBACK STARTED (Verified Playback Active)...")
     
     task.spawn(function()
         local playbackStart = tick()
@@ -897,16 +897,27 @@ function startPlayback()
                         end
                         
                         if currentModel then
-                            task.wait(0.2)
+                            task.wait(0.15)
+                            local cashBeforePlay = getPlayerCash()
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
                             
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
                             else remoteObj:FireServer(unpack(playArgs)) end
                             
-                            task.wait(0.3)
+                            task.wait(0.35)
+                            local cashAfterPlay = getPlayerCash()
                             
-                            successAction = true
-                            logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
+                            -- VERIFIKASI NYATA: Cek apakah uang benar-benar berubah (berkurang untuk upgrade, bertambah untuk sell)
+                            if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
+                                successAction = true
+                                logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE", index, #recordedData, targetIdx))
+                            elseif action.Type == "SELL" and cashBeforePlay < cashAfterPlay then
+                                successAction = true
+                                logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
+                            else
+                                logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server, Mencoba Lagi...", index, #recordedData, action.Type, targetIdx))
+                                task.wait(0.5)
+                            end
                         else
                             logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
                             task.wait(1)
