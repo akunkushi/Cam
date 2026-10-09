@@ -1,4 +1,4 @@
--- Macro TD v34.33 - Fixed Recording & Post-Update Compatibility
+-- Macro TD v34.34 - UI Syntax Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.33 (Post-Update Fix)"
+title.Text = "Macro TD v34.34 (UI Fixed)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -580,7 +580,6 @@ local function getCFrameFromArgs(args)
     return nil
 end
 
--- HELPER YANG HILANG SEBELUMNYA TELAH DIKEMBALIKAN DI SINI:
 local function getTowerFromArgs(args)
     for _, v in pairs(args) do
         if typeof(v) == "Instance" and v:IsA("Model") then
@@ -786,7 +785,7 @@ recordBtn.MouseButton1Click:Connect(function()
         recordStartTime = tick()
         recordBtn.Text = "Record: ON"
         recordBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        logConsole("RECORDING STARTED (New Game Version)...")
+        logConsole("RECORDING STARTED...")
     else
         recordBtn.Text = "Record: OFF"
         recordBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
@@ -969,7 +968,7 @@ task.spawn(function()
                 if pg then
                     for _, gui in ipairs(pg:GetDescendants()) do
                         if gui:IsA("TextLabel") or gui:IsA("TextButton") then
-                            let txt = gui.Text:lower()
+                            local txt = gui.Text:lower() -- Diperbaiki dari 'let' menjadi 'local'
                             if txt:find("wave") or txt:find("toilet") or txt:find("units:") or txt:find("completed") then
                                 matchStarted = true
                                 break
