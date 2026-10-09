@@ -1,4 +1,4 @@
--- Macro TD v34.15 - Backward Compatible & Smart Spatial Fallback
+-- Macro TD v34.16 - Anti-Double Placement & Old File Compatible
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.15 (Old File Compatible)"
+title.Text = "Macro TD v34.16 (Anti-Double Place)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -439,7 +439,6 @@ saveBtn.MouseButton1Click:Connect(function()
     end)
 end)
 
--- KOMPATIBILITAS MUNDUR: Menangani file lama agar bisa dimuat tanpa error
 function loadMacroFromFile(mName)
     local fileName = FOLDER_NAME .. "/" .. mName .. ".json"
     if not isfile or not isfile(fileName) then
@@ -597,7 +596,6 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
--- PENCARIAN TARGET CERDAS DENGAN SPATIAL FALLBACK
 local function resolveTargetIndex(args, targetModel, actionPos)
     if targetModel then
         for idx, tInfo in pairs(recordedTowers) do
@@ -835,7 +833,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Backward Compatible Active)...")
+    logConsole("PLAYBACK STARTED (Anti-Double Place Active)...")
     
     task.spawn(function()
         local playbackStart = tick()
@@ -854,6 +852,8 @@ function startPlayback()
 
                 if action.Type == "ADD" then
                     local newlySpawnedModel = nil
+                    local hasFired = false -- PENCEGAH DOUBLE FIRE REMOTE
+                    
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
                             logConsole(string.format("[%d/%d] Menunggu Cash Place (Butuh: %d | Cash: %d)...", index, #recordedData, requiredCost, getPlayerCash()))
@@ -861,42 +861,42 @@ function startPlayback()
                         end
                         if not isPlaying then return end
 
-                        local cashBeforePlay = getPlayerCash()
                         local beforeSnapshot = {}
                         for _, v in ipairs(Workspace:GetDescendants()) do
                             if v:IsA("Model") then beforeSnapshot[v] = true end
                         end
                         
-                        if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
-                        else remoteObj:FireServer(unpack(realArgs)) end
+                        -- Kirim remote HANYA SEKALI SAJA
+                        if not hasFired then
+                            if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
+                            else remoteObj:FireServer(unpack(realArgs)) end
+                            hasFired = true
+                            task.wait(0.3)
+                        end
                         
-                        task.wait(0.3)
-                        local cashAfterPlay = getPlayerCash()
-                        
-                        if cashBeforePlay > cashAfterPlay then
-                            local timer = 0
-                            repeat
-                                task.wait(0.1)
-                                timer = timer + 0.1
-                                for _, v in ipairs(Workspace:GetDescendants()) do
-                                    if v:IsA("Model") and not beforeSnapshot[v] and v ~= LocalPlayer.Character then
-                                        if getRootFromModel(v) then
-                                            newlySpawnedModel = v; break
-                                        end
+                        -- Tunggu model muncul tanpa mengirim ulang remote
+                        local timer = 0
+                        repeat
+                            task.wait(0.1)
+                            timer = timer + 0.1
+                            for _, v in ipairs(Workspace:GetDescendants()) do
+                                if v:IsA("Model") and not beforeSnapshot[v] and v ~= LocalPlayer.Character then
+                                    if getRootFromModel(v) then
+                                        newlySpawnedModel = v; break
                                     end
                                 end
-                            until newlySpawnedModel or timer >= 2.0
-                            
-                            if not newlySpawnedModel and action.PositionCF then
-                                local excludeInstances = {}
-                                for _, t in pairs(sessionTowers) do excludeInstances[t] = true end
-                                newlySpawnedModel = findTowerNearPosition(action.PositionCF, excludeInstances)
                             end
+                        until newlySpawnedModel or timer >= 2.0
+                        
+                        if not newlySpawnedModel and action.PositionCF then
+                            local excludeInstances = {}
+                            for _, t in pairs(sessionTowers) do excludeInstances[t] = true end
+                            newlySpawnedModel = findTowerNearPosition(action.PositionCF, excludeInstances)
                         end
                         
                         if not newlySpawnedModel then
-                            logConsole(string.format("[%d/%d] PLACE Tower #%d Ditolak Server/Cash Kurang, Menunggu...", index, #recordedData, action.TowerIndex or action.TargetIndex))
-                            task.wait(1)
+                            logConsole(string.format("[%d/%d] PLACE Tower #%d Menunggu Model...", index, #recordedData, action.TowerIndex or action.TargetIndex))
+                            task.wait(0.5)
                         end
                     until newlySpawnedModel or not isPlaying
 
@@ -917,7 +917,6 @@ function startPlayback()
                         end
                         if not isPlaying then return end
 
-                        -- Fallback spasial pintar untuk file lama yang indeksnya mungkin kurang sinkron
                         local currentModel = sessionTowers[targetIdx]
                         if not currentModel or not currentModel.Parent then
                             if recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
