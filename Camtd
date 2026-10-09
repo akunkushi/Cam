@@ -1,4 +1,4 @@
--- Macro TD v34.36 - Post-Update Diagnostic & Upgrade Fix
+-- Macro TD v34.37 - Deep Table Diagnostic & Post-Update Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -19,14 +19,14 @@ pcall(function()
     end
 end)
 
--- ==================== UI PEMBUATAN UTAMA ====================
+-- ==================== UI PEMBUATAN UTAMA (MOBILE SAFE) ====================
 local playerGui = LocalPlayer:WaitForChild("PlayerGui")
-if playerGui:FindFirstChild("MacroGameplayGUI_v34") then
-    playerGui.MacroGameplayGUI_v34:Destroy()
+if playerGui:FindFirstChild("MacroGameplayGUI_v37") then
+    playerGui.MacroGameplayGUI_v37:Destroy()
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v34"
+screenGui.Name = "MacroGameplayGUI_v37"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = playerGui
 
@@ -47,7 +47,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.36 (Post-Update Diagnostic)"
+title.Text = "Macro TD v37 (Deep Diagnostic)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -643,7 +643,7 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     return 1
 end
 
--- PEREKONSTRUKSI ARGUMEN & DIAGNOSTIK POST-UPDATE
+-- PEREKONSTRUKSI ARGUMEN CERDAS POST-UPDATE
 local function rebuildArgsForPlayback(oldArgs, newModel)
     if not newModel then return oldArgs end
     local function recursiveProcess(tbl)
@@ -675,6 +675,20 @@ local function rebuildArgsForPlayback(oldArgs, newModel)
     end
 end
 
+-- Fungsi bantu untuk mencetak isi tabel secara mendalam ke konsol (F9)
+local function printTableDeep(tbl, indent)
+    indent = indent or ""
+    for k, v in pairs(tbl) do
+        if type(v) == "table" then
+            print(indent .. tostring(k) .. " = {")
+            printTableDeep(v, indent .. "  ")
+            print(indent .. "}")
+        else
+            print(indent .. tostring(k) .. " = " .. tostring(v) .. " (" .. typeof(v) .. ")")
+        end
+    end
+end
+
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -684,13 +698,18 @@ if not getgenv().MacroHookedTD then
         
         if method == "FireServer" or method == "InvokeServer" then
             local rName = self.Name
-            if rName == "TowerUpgrade" then
-                -- DIAGNOSTIK: Mencetak isi argumen upgrade asli dari game ke konsol agar terlihat jelas
-                local argStr = ""
+            if rName == "TowerUpgrade" or rName == "TowerSell" then
+                print("========================================")
+                print("[DEEP DIAGNOSTIC] Remote:", rName, "Method:", method)
                 for i, v in ipairs(args) do
-                    argStr = argStr .. string.format("[Arg%d: %s (%s)] ", i, tostring(v), typeof(v))
+                    print(string.format("Argument #%d (Tipe: %s):", i, typeof(v)))
+                    if type(v) == "table" then
+                        printTableDeep(v, "  ")
+                    else
+                        print("  Value:", tostring(v))
+                    end
                 end
-                print("[DIAGNOSTIC TowerUpgrade]:", argStr)
+                print("========================================")
             end
             
             if isRecording and (rName == "TowerAdd" or rName == "TowerUpgrade" or rName == "TowerSell") then
@@ -910,10 +929,15 @@ function startPlayback()
                             local playArgs = rebuildArgsForPlayback(realArgs, currentModel)
                             
                             pcall(function()
-                                if action.Method == "InvokeServer" then 
-                                    remoteObj:InvokeServer(unpack(playArgs))
-                                else 
-                                    remoteObj:FireServer(unpack(playArgs)) 
+                                if retryCount <= 2 then
+                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
+                                    else remoteObj:FireServer(unpack(playArgs)) end
+                                elseif retryCount <= 5 then
+                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(currentModel)
+                                    else remoteObj:FireServer(currentModel) end
+                                else
+                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(targetIdx, currentModel)
+                                    else remoteObj:FireServer(targetIdx, currentModel) end
                                 end
                             end)
                             
