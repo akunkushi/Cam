@@ -1,4 +1,4 @@
--- Macro TD v34.30 - Bugfix String Concatenation & Macro Loading Fix
+-- Macro TD v34.31 - Dynamic Runtime ID Resolution Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.30 (Loading Fix)"
+title.Text = "Macro TD v34.31 (Dynamic ID Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -659,16 +659,17 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     return 1
 end
 
-local function rebuildArgsForPlayback(oldArgs, newModel, recordedIDs)
+-- RESOLUSI ID DINAMIS: Mengambil ID yang sedang aktif di match saat ini secara real-time
+local function rebuildArgsForPlayback(oldArgs, newModel)
     if not newModel then return oldArgs end
-    local primaryID = getPrimaryID(newModel)
+    local freshID = getPrimaryID(newModel)
     
     local function processTable(tbl)
         local res = {}
         for k, v in pairs(tbl) do
             if type(v) == "table" then
                 if v.__isSerializedInstance then
-                    res[k] = primaryID or newModel
+                    res[k] = freshID or newModel
                 else
                     res[k] = processTable(v)
                 end
@@ -676,20 +677,13 @@ local function rebuildArgsForPlayback(oldArgs, newModel, recordedIDs)
                 if v:IsA("Player") or v == LocalPlayer or (LocalPlayer.Character and v:IsDescendantOf(LocalPlayer.Character)) then
                     res[k] = v
                 else
-                    res[k] = primaryID or newModel
+                    res[k] = freshID or newModel
                 end
-            elseif type(v) == "string" and recordedIDs then
-                local matched = false
-                for _, oldID in ipairs(recordedIDs) do
-                    if v == tostring(oldID) and #v > 3 then
-                        res[k] = primaryID or v
-                        matched = true
-                        break
-                    end
-                end
-                if not matched then res[k] = v end
+            elseif type(v) == "string" and #v > 3 then
+                -- Ganti string ID lama dengan ID dinamis baru dari match saat ini
+                res[k] = freshID or v
             else
-                res[k] = v
+                res[k] = v -- Pertahankan angka kecil seperti nomor path/tier upgrade (1, 2, dll)
             end
         end
         return res
@@ -698,13 +692,13 @@ local function rebuildArgsForPlayback(oldArgs, newModel, recordedIDs)
     if type(oldArgs) == "table" then
         local newArgs = processTable(oldArgs)
         if #newArgs > 0 and type(newArgs[1]) ~= "number" then
-            newArgs[1] = primaryID or newModel
+            newArgs[1] = freshID or newModel
         elseif #newArgs == 0 then
-            newArgs[1] = primaryID or newModel
+            newArgs[1] = freshID or newModel
         end
         return newArgs
     else
-        return {primaryID or newModel}
+        return {freshID or newModel}
     end
 end
 
@@ -831,7 +825,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Active)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Dynamic ID Active)...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -934,7 +928,8 @@ function startPlayback()
                         if currentModel then
                             task.wait(0.2 / selectedSpeed)
                             local cashBeforePlay = getPlayerCash()
-                            local playArgs = rebuildArgsForPlayback(realArgs, currentModel, action.TowerIDs)
+                            -- Rekonstruksi argumen menggunakan ID dinamis dari model yang aktif saat ini
+                            local playArgs = rebuildArgsForPlayback(realArgs, currentModel)
                             
                             pcall(function()
                                 if retryCount <= 2 then
