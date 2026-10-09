@@ -1,4 +1,4 @@
--- Macro TD v34.14 - Safe Upgrade Path & Verified Playback
+-- Macro TD v34.15 - Backward Compatible & Smart Spatial Fallback
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.14 (Path Protection Fixed)"
+title.Text = "Macro TD v34.15 (Old File Compatible)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -439,6 +439,7 @@ saveBtn.MouseButton1Click:Connect(function()
     end)
 end)
 
+-- KOMPATIBILITAS MUNDUR: Menangani file lama agar bisa dimuat tanpa error
 function loadMacroFromFile(mName)
     local fileName = FOLDER_NAME .. "/" .. mName .. ".json"
     if not isfile or not isfile(fileName) then
@@ -453,27 +454,40 @@ function loadMacroFromFile(mName)
         recordedData = {}
         recordedTowers = {}
         
-        for _, act in ipairs(data.Record) do
-            local remoteObj = ReplicatedStorage:FindFirstChild(act.RemoteName, true)
-            table.insert(recordedData, {
-                Type = act.Type, Time = act.Time, Remote = remoteObj or ReplicatedStorage,
-                RemoteName = act.RemoteName, Method = act.Method, Args = deserializeVal(act.Args),
-                TowerIndex = act.TowerIndex, TargetIndex = act.TargetIndex,
-                PositionCF = act.PositionCF and deserializeVal(act.PositionCF) or nil,
-                CashCost = act.CashCost or 150,
-                TowerIDs = act.TowerIDs
-            })
+        if data.Record then
+            for _, act in ipairs(data.Record) do
+                local remoteObj = ReplicatedStorage:FindFirstChild(act.RemoteName, true)
+                table.insert(recordedData, {
+                    Type = act.Type, 
+                    Time = act.Time, 
+                    Remote = remoteObj or ReplicatedStorage,
+                    RemoteName = act.RemoteName, 
+                    Method = act.Method, 
+                    Args = deserializeVal(act.Args),
+                    TowerIndex = act.TowerIndex or act.TargetIndex or 1,
+                    TargetIndex = act.TargetIndex or act.TowerIndex or 1,
+                    PositionCF = act.PositionCF and deserializeVal(act.PositionCF) or nil,
+                    CashCost = act.CashCost or 150,
+                    TowerIDs = act.TowerIDs or {}
+                })
+            end
         end
         
-        for idxStr, tInfo in pairs(data.Towers) do
-            local idx = tonumber(idxStr)
-            recordedTowers[idx] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil, IDs = tInfo.IDs or {} }
+        if data.Towers then
+            for idxStr, tInfo in pairs(data.Towers) do
+                local idx = tonumber(idxStr)
+                recordedTowers[idx] = { 
+                    Index = tInfo.Index or idx, 
+                    PositionCF = tInfo.PositionCF and deserializeVal(tInfo.PositionCF) or nil, 
+                    IDs = tInfo.IDs or {} 
+                }
+            end
         end
         return true
     end)
     
     if success then
-        logConsole("Berhasil Load: " .. mName .. " (" .. #recordedData .. " aksi)")
+        logConsole("Berhasil Load (Kompatibel): " .. mName .. " (" .. #recordedData .. " aksi)")
         return true
     else
         logConsole("Gagal membaca file makro!")
@@ -583,7 +597,8 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
-local function resolveTargetIndex(args, targetModel)
+-- PENCARIAN TARGET CERDAS DENGAN SPATIAL FALLBACK
+local function resolveTargetIndex(args, targetModel, actionPos)
     if targetModel then
         for idx, tInfo in pairs(recordedTowers) do
             if tInfo.Model and tInfo.Model == targetModel then
@@ -617,6 +632,9 @@ local function resolveTargetIndex(args, targetModel)
     
     local targetRoot = targetModel and getRootFromModel(targetModel)
     local targetPos = targetRoot and targetRoot.Position or (targetModel and targetModel.PrimaryPart and targetModel.PrimaryPart.Position)
+    if not targetPos and actionPos then
+        targetPos = (typeof(actionPos) == "CFrame") and actionPos.Position or actionPos
+    end
     if not targetPos then
         local cf = getCFrameFromArgs(args)
         if cf then targetPos = cf.Position end
@@ -640,7 +658,6 @@ local function resolveTargetIndex(args, targetModel)
     return 1
 end
 
--- PERBAIKAN: Lindungi angka kecil (tier/path upgrade) agar tidak tertukar dengan ID tower
 local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     if not newModel then return oldArgs end
     local newPrimaryID = getPrimaryID(newModel)
@@ -663,12 +680,11 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
                 res[k] = targetRoot.Position
             elseif type(v) == "string" or type(v) == "number" then
                 local strVal = tostring(v)
-                -- Jangan ubah angka kecil (seperti 1, 2) karena itu adalah path/tier upgrade!
                 if type(v) == "number" and v < 10 then
                     res[k] = v
                 else
                     local replaced = false
-                    if recordedIDsList then
+                    if recordedIDsList and #recordedIDsList > 0 then
                         for _, oldID in ipairs(recordedIDsList) do
                             if strVal == tostring(oldID) and #strVal > 3 then
                                 res[k] = newPrimaryID or newModel.Name
@@ -752,14 +768,14 @@ if not getgenv().MacroHookedTD then
                             
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
                             local targetModel = getTowerFromArgs(args)
-                            local targetIdx = resolveTargetIndex(args, targetModel)
+                            local targetIdx = resolveTargetIndex(args, targetModel, nil)
                             local actionType = (rName == "TowerUpgrade" and "UPGRADE" or "SELL")
                             local targetIDs = recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs or nil
                             
                             local actionEntry = {
                                 Type = actionType, Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TargetIndex = targetIdx, CashCost = 150,
-                                TowerIDs = targetIDs
+                                TowerIDs = targetIDs, PositionCF = targetModel and targetModel:GetPivot() or nil
                             }
                             table.insert(recordedData, actionEntry)
                             local entryIndex = #recordedData
@@ -819,7 +835,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Path Protection Active)...")
+    logConsole("PLAYBACK STARTED (Backward Compatible Active)...")
     
     task.spawn(function()
         local playbackStart = tick()
@@ -879,18 +895,19 @@ function startPlayback()
                         end
                         
                         if not newlySpawnedModel then
-                            logConsole(string.format("[%d/%d] PLACE Tower #%d Ditolak Server/Cash Kurang, Menunggu...", index, #recordedData, action.TowerIndex))
+                            logConsole(string.format("[%d/%d] PLACE Tower #%d Ditolak Server/Cash Kurang, Menunggu...", index, #recordedData, action.TowerIndex or action.TargetIndex))
                             task.wait(1)
                         end
                     until newlySpawnedModel or not isPlaying
 
                     if newlySpawnedModel then
-                        sessionTowers[action.TowerIndex] = newlySpawnedModel
-                        logConsole(string.format("[%d/%d] PLACE Tower #%d OK", index, #recordedData, action.TowerIndex))
+                        local tIdx = action.TowerIndex or action.TargetIndex or 1
+                        sessionTowers[tIdx] = newlySpawnedModel
+                        logConsole(string.format("[%d/%d] PLACE Tower #%d OK", index, #recordedData, tIdx))
                     end
 
                 elseif action.Type == "UPGRADE" or action.Type == "SELL" then
-                    local targetIdx = action.TargetIndex or 1
+                    local targetIdx = action.TargetIndex or action.TowerIndex or 1
                     
                     local successAction = false
                     repeat
@@ -900,13 +917,19 @@ function startPlayback()
                         end
                         if not isPlaying then return end
 
+                        -- Fallback spasial pintar untuk file lama yang indeksnya mungkin kurang sinkron
                         local currentModel = sessionTowers[targetIdx]
-                        if not currentModel and recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
-                            local excludeInstances = {}
-                            for k, t in pairs(sessionTowers) do 
-                                if k ~= targetIdx then excludeInstances[t] = true end 
+                        if not currentModel or not currentModel.Parent then
+                            if recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
+                                currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF)
+                            elseif action.PositionCF then
+                                currentModel = findTowerNearPosition(action.PositionCF)
+                            else
+                                local cfFromArgs = getCFrameFromArgs(realArgs)
+                                if cfFromArgs then
+                                    currentModel = findTowerNearPosition(cfFromArgs)
+                                end
                             end
-                            currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF, excludeInstances)
                         end
                         
                         if currentModel then
