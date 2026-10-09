@@ -1,4 +1,4 @@
--- Macro TD v34.17 - Auto Game Speed (x1, x1.5, x2) & Proportional Playback
+-- Macro TD v34.18 - Stable Upgrade Delays for x2 Speed
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.17 (Auto Game Speed)"
+title.Text = "Macro TD v34.18 (Stable Upgrade x2)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -874,9 +874,8 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. ")...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Stable Upgrade Active)...")
     
-    -- Terapkan kecepatan game saat playback dimulai
     applyGameSpeed(selectedSpeed)
     
     task.spawn(function()
@@ -885,7 +884,6 @@ function startPlayback()
         
         for index, action in ipairs(recordedData) do
             if not isPlaying then break end
-            -- Sesuaikan jeda waktu dengan kecepatan game yang dipilih (dibagi selectedSpeed)
             local waitTime = (action.Time - (tick() - playbackStart)) / selectedSpeed
             if waitTime > 0 then task.wait(waitTime) end
             if not isPlaying then break end
@@ -956,7 +954,7 @@ function startPlayback()
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
                             logConsole(string.format("[%d/%d] Menunggu Cash %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
-                            task.wait(1 / selectedSpeed)
+                            task.wait(0.5)
                         end
                         if not isPlaying then return end
 
@@ -975,14 +973,15 @@ function startPlayback()
                         end
                         
                         if currentModel then
-                            task.wait(0.15 / selectedSpeed)
+                            -- Jeda stabil tanpa dibagi speed berlebihan agar server tidak menolak
+                            task.wait(0.25)
                             local cashBeforePlay = getPlayerCash()
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
                             
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
                             else remoteObj:FireServer(unpack(playArgs)) end
                             
-                            task.wait(0.35 / selectedSpeed)
+                            task.wait(0.4)
                             local cashAfterPlay = getPlayerCash()
                             
                             if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
@@ -993,11 +992,11 @@ function startPlayback()
                                 logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
                             else
                                 logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server, Mencoba Lagi...", index, #recordedData, action.Type, targetIdx))
-                                task.wait(0.5 / selectedSpeed)
+                                task.wait(0.5)
                             end
                         else
                             logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
-                            task.wait(1 / selectedSpeed)
+                            task.wait(0.5)
                         end
                     until successAction or not isPlaying
                 end
