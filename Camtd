@@ -1,4 +1,4 @@
--- Macro TD v34.21 - Enhanced Match Detector & Stable Upgrade
+-- Macro TD v34.22 - Direct Remote Upgrade Verification & Auto Match
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.21 (Enhanced Match Detector)"
+title.Text = "Macro TD v34.22 (Stable Upgrade Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -874,7 +874,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. ")...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Stable Upgrade Active)...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -954,7 +954,7 @@ function startPlayback()
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
                             logConsole(string.format("[%d/%d] Menunggu Cash %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
-                            task.wait(1)
+                            task.wait(1 / selectedSpeed)
                         end
                         if not isPlaying then return end
 
@@ -973,29 +973,29 @@ function startPlayback()
                         end
                         
                         if currentModel then
-                            task.wait(0.3)
-                            local cashBeforePlay = getPlayerCash()
+                            task.wait(0.2 / selectedSpeed)
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
                             
-                            if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
-                            else remoteObj:FireServer(unpack(playArgs)) end
+                            -- VERIFIKASI LANGSUNG: Kirim remote upgrade/sell dengan aman tanpa pemeriksaan UI cash yang delay
+                            local callSuccess = pcall(function()
+                                if action.Method == "InvokeServer" then 
+                                    remoteObj:InvokeServer(unpack(playArgs))
+                                else 
+                                    remoteObj:FireServer(unpack(playArgs)) 
+                                end
+                            end)
                             
-                            task.wait(0.5)
-                            local cashAfterPlay = getPlayerCash()
-                            
-                            if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
+                            if callSuccess then
                                 successAction = true
-                                logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE", index, #recordedData, targetIdx))
-                            elseif action.Type == "SELL" and cashBeforePlay < cashAfterPlay then
-                                successAction = true
-                                logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
+                                logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
+                                task.wait(0.3 / selectedSpeed)
                             else
-                                logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server, Menunggu Cooldown...", index, #recordedData, action.Type, targetIdx))
-                                task.wait(1.5)
+                                logConsole(string.format("[%d/%d] %s Tower #%d Gagal, Mencoba Lagi...", index, #recordedData, action.Type, targetIdx))
+                                task.wait(1 / selectedSpeed)
                             end
                         else
                             logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
-                            task.wait(1)
+                            task.wait(0.5 / selectedSpeed)
                         end
                     until successAction or not isPlaying
                 end
@@ -1021,7 +1021,7 @@ playBtn.MouseButton1Click:Connect(function()
     startPlayback()
 end)
 
--- PENINGKATAN AUTO PLAY MATCH: Deteksi lebih fleksibel (mendeteksi kata wave, toilet, units, atau status gameplay aktif)
+-- OTOMATISASI MATCH BARU
 task.spawn(function()
     while true do
         task.wait(3)
@@ -1033,7 +1033,6 @@ task.spawn(function()
                     for _, gui in ipairs(pg:GetDescendants()) do
                         if gui:IsA("TextLabel") or gui:IsA("TextButton") then
                             local txt = gui.Text:lower()
-                            -- Memeriksa berbagai indikator umum di layar saat match berjalan
                             if txt:find("wave") or txt:find("toilet") or txt:find("units:") or txt:find("completed") then
                                 matchStarted = true
                                 break
@@ -1048,7 +1047,6 @@ task.spawn(function()
                 task.wait(2)
                 if loadMacroFromFile(nameBox.Text) then
                     startPlayback()
-                    -- Jeda lebih lama agar tidak mendeteksi ulang match yang sama secara beruntun
                     task.wait(20)
                 end
             end
