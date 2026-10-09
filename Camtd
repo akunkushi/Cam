@@ -1,4 +1,4 @@
--- Macro TD v34.24 - Real Cash Verification for Upgrades & Auto Match
+-- Macro TD v34.25 - Forced Tower Reference & Stable Upgrade Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.24 (Real Cash Verification)"
+title.Text = "Macro TD v34.25 (Upgrade Ref Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -697,6 +697,7 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     return 1
 end
 
+-- DIPERBARUI: Memaksa argumen upgrade menggunakan model tower aktif saat ini
 local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     if not newModel then return oldArgs end
     local newPrimaryID = getPrimaryID(newModel)
@@ -726,15 +727,15 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
                     if recordedIDsList and #recordedIDsList > 0 then
                         for _, oldID in ipairs(recordedIDsList) do
                             if strVal == tostring(oldID) and #strVal > 3 then
-                                res[k] = newPrimaryID or newModel.Name
+                                res[k] = newModel -- Memastikan model diganti langsung
                                 replaced = true
                                 break
                             end
                         end
                     end
                     if not replaced then
-                        if (strVal:find("-") or #strVal >= 5 or strVal:find("Tower")) and newPrimaryID then
-                            res[k] = newPrimaryID
+                        if (strVal:find("-") or #strVal >= 5 or strVal:find("Tower")) then
+                            res[k] = newModel -- Memaksa referensi ke model aktif
                         else
                             res[k] = v
                         end
@@ -748,7 +749,13 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
         end
         return res
     end
-    return processTable(oldArgs)
+    
+    local finalArgs = processTable(oldArgs)
+    -- Memastikan argumen pertama jika berupa nilai tunggal/tabel langsung merujuk ke newModel
+    if type(finalArgs) == "table" and #finalArgs == 0 then
+        finalArgs[1] = newModel
+    end
+    return finalArgs
 end
 
 if not getgenv().MacroHookedTD then
@@ -874,7 +881,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Real Cash Verification Active)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Forced Ref Active)...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -978,13 +985,19 @@ function startPlayback()
                             local cashBeforePlay = getPlayerCash()
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
                             
+                            -- Memastikan argumen utama berisi model aktif saat ini
+                            if type(playArgs) == "table" then
+                                playArgs[1] = currentModel
+                            else
+                                playArgs = {currentModel}
+                            end
+                            
                             if action.Method == "InvokeServer" then 
                                 remoteObj:InvokeServer(unpack(playArgs))
                             else 
                                 remoteObj:FireServer(unpack(playArgs)) 
                             end
                             
-                            -- VERIFIKASI NYATA: Tunggu sebentar dan cek apakah cash berkurang (untuk upgrade) atau bertambah (untuk sell)
                             task.wait(0.5 / selectedSpeed)
                             local cashAfterPlay = getPlayerCash()
                             
