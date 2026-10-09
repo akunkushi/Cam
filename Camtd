@@ -1,4 +1,4 @@
--- Macro TD v34.31 - Dynamic Runtime ID Resolution Fix
+-- Macro TD v34.32 - Exact Argument Preservation Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.31 (Dynamic ID Fix)"
+title.Text = "Macro TD v34.32 (Exact Args Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -580,26 +580,6 @@ local function getCFrameFromArgs(args)
     return nil
 end
 
-local function extractAllIDsFromModel(inst)
-    if not inst or not inst:IsA("Instance") then return {} end
-    local ids = {inst.Name}
-    for k, v in pairs(inst:GetAttributes()) do
-        if type(v) == "string" or type(v) == "number" then table.insert(ids, tostring(v)) end
-    end
-    for _, child in ipairs(inst:GetDescendants()) do
-        if child:IsA("ValueBase") and child.Value then table.insert(ids, tostring(child.Value)) end
-    end
-    return ids
-end
-
-local function getPrimaryID(inst)
-    if not inst or not inst:IsA("Instance") then return nil end
-    for k, v in pairs(inst:GetAttributes()) do
-        if k:lower():find("id") or k:lower():find("uuid") then return tostring(v) end
-    end
-    return inst.Name
-end
-
 local function findTowerNearPosition(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
@@ -659,46 +639,36 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     return 1
 end
 
--- RESOLUSI ID DINAMIS: Mengambil ID yang sedang aktif di match saat ini secara real-time
+-- PEREKONSTRUKSI ARGUMEN TEPAT: Mempertahankan struktur asli rekaman, hanya mengganti objek tower lama dengan model baru
 local function rebuildArgsForPlayback(oldArgs, newModel)
     if not newModel then return oldArgs end
-    local freshID = getPrimaryID(newModel)
     
-    local function processTable(tbl)
+    local function recursiveProcess(tbl)
         local res = {}
         for k, v in pairs(tbl) do
             if type(v) == "table" then
                 if v.__isSerializedInstance then
-                    res[k] = freshID or newModel
+                    res[k] = newModel
                 else
-                    res[k] = processTable(v)
+                    res[k] = recursiveProcess(v)
                 end
             elseif typeof(v) == "Instance" then
                 if v:IsA("Player") or v == LocalPlayer or (LocalPlayer.Character and v:IsDescendantOf(LocalPlayer.Character)) then
                     res[k] = v
                 else
-                    res[k] = freshID or newModel
+                    res[k] = newModel
                 end
-            elseif type(v) == "string" and #v > 3 then
-                -- Ganti string ID lama dengan ID dinamis baru dari match saat ini
-                res[k] = freshID or v
             else
-                res[k] = v -- Pertahankan angka kecil seperti nomor path/tier upgrade (1, 2, dll)
+                res[k] = v -- Mempertahankan angka asli (seperti nomor path/tier upgrade) secara utuh 100%
             end
         end
         return res
     end
     
     if type(oldArgs) == "table" then
-        local newArgs = processTable(oldArgs)
-        if #newArgs > 0 and type(newArgs[1]) ~= "number" then
-            newArgs[1] = freshID or newModel
-        elseif #newArgs == 0 then
-            newArgs[1] = freshID or newModel
-        end
-        return newArgs
+        return recursiveProcess(oldArgs)
     else
-        return {freshID or newModel}
+        return {newModel}
     end
 end
 
@@ -825,7 +795,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Dynamic ID Active)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Exact Args Active)...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -928,19 +898,14 @@ function startPlayback()
                         if currentModel then
                             task.wait(0.2 / selectedSpeed)
                             local cashBeforePlay = getPlayerCash()
-                            -- Rekonstruksi argumen menggunakan ID dinamis dari model yang aktif saat ini
+                            -- Menggunakan argumen asli hasil rekam, hanya menukar referensi tower dengan model aktif saat ini
                             local playArgs = rebuildArgsForPlayback(realArgs, currentModel)
                             
                             pcall(function()
-                                if retryCount <= 2 then
-                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
-                                    else remoteObj:FireServer(unpack(playArgs)) end
-                                elseif retryCount <= 5 then
-                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(currentModel)
-                                    else remoteObj:FireServer(currentModel) end
-                                else
-                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(targetIdx, currentModel)
-                                    else remoteObj:FireServer(targetIdx, currentModel) end
+                                if action.Method == "InvokeServer" then 
+                                    remoteObj:InvokeServer(unpack(playArgs))
+                                else 
+                                    remoteObj:FireServer(unpack(playArgs)) 
                                 end
                             end)
                             
@@ -955,7 +920,7 @@ function startPlayback()
                                 logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
                             else
                                 retryCount = retryCount + 1
-                                logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server (Percobaan #%d)...", index, #recordedData, action.Type, targetIdx, retryCount))
+                                logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server (Mencoba Lagi #%d)...", index, #recordedData, action.Type, targetIdx, retryCount))
                                 task.wait(0.8 / selectedSpeed)
                             end
                         else
