@@ -1,4 +1,4 @@
--- Macro TD v34 - Auto-Retry & Persistent Cash Waiter
+-- Macro TD v34.1 - Auto-Retry & Delete Macro Feature
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -138,7 +138,7 @@ screenGui.Parent = guiParent
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Size = UDim2.new(0, 360, 0, 35)
-mainFrame.Position = UDim2.new(0, 20, 0.2, -100) -- Posisi Kiri
+mainFrame.Position = UDim2.new(0, 20, 0.2, -100)
 mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
 mainFrame.BorderSizePixel = 0
 mainFrame.Active = true
@@ -153,7 +153,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34 (Auto-Retry Fix)"
+title.Text = "Macro TD v34.1 (Delete Feature)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 13
 title.Font = Enum.Font.SourceSansBold
@@ -197,36 +197,47 @@ playBtn.Font = Enum.Font.SourceSansBold
 playBtn.TextSize = 12
 playBtn.Parent = contentFrame
 
+-- Row Nama & Tombol Aksi File (Save, Load, Delete)
 local nameBox = Instance.new("TextBox")
-nameBox.Size = UDim2.new(0, 160, 0, 28)
+nameBox.Size = UDim2.new(0, 105, 0, 28)
 nameBox.Position = UDim2.new(0, 15, 0, 45)
 nameBox.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
 nameBox.Text = "makro1"
-nameBox.PlaceholderText = "Nama Makro..."
+nameBox.PlaceholderText = "Nama..."
 nameBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 nameBox.Font = Enum.Font.SourceSans
 nameBox.TextSize = 12
 nameBox.Parent = contentFrame
 
 local saveBtn = Instance.new("TextButton")
-saveBtn.Size = UDim2.new(0, 75, 0, 28)
-saveBtn.Position = UDim2.new(0, 185, 0, 45)
+saveBtn.Size = UDim2.new(0, 68, 0, 28)
+saveBtn.Position = UDim2.new(0, 125, 0, 45)
 saveBtn.BackgroundColor3 = Color3.fromRGB(60, 100, 180)
 saveBtn.Text = "Save"
 saveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 saveBtn.Font = Enum.Font.SourceSansBold
-saveBtn.TextSize = 12
+saveBtn.TextSize = 11
 saveBtn.Parent = contentFrame
 
 local loadBtn = Instance.new("TextButton")
-loadBtn.Size = UDim2.new(0, 75, 0, 28)
-loadBtn.Position = UDim2.new(0, 270, 0, 45)
+loadBtn.Size = UDim2.new(0, 68, 0, 28)
+loadBtn.Position = UDim2.new(0, 198, 0, 45)
 loadBtn.BackgroundColor3 = Color3.fromRGB(140, 100, 40)
 loadBtn.Text = "Load"
 loadBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 loadBtn.Font = Enum.Font.SourceSansBold
-loadBtn.TextSize = 12
+loadBtn.TextSize = 11
 loadBtn.Parent = contentFrame
+
+local deleteBtn = Instance.new("TextButton")
+deleteBtn.Size = UDim2.new(0, 68, 0, 28)
+deleteBtn.Position = UDim2.new(0, 271, 0, 45)
+deleteBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
+deleteBtn.Text = "Delete"
+deleteBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+deleteBtn.Font = Enum.Font.SourceSansBold
+deleteBtn.TextSize = 11
+deleteBtn.Parent = contentFrame
 
 local elevatorSelectBtn = Instance.new("TextButton")
 elevatorSelectBtn.Size = UDim2.new(0, 160, 0, 28)
@@ -461,6 +472,23 @@ end
 
 loadBtn.MouseButton1Click:Connect(function()
     loadMacroFromFile(nameBox.Text)
+end)
+
+-- Fungsi Delete Makro
+local function deleteMacroFile(mName)
+    local fileName = FOLDER_NAME .. "/" .. mName .. ".json"
+    if delfile and isfile and isfile(fileName) then
+        pcall(function()
+            delfile(fileName)
+            logConsole("Berhasil Hapus File: " .. mName)
+        end)
+    else
+        logConsole("File " .. mName .. " tidak ditemukan atau fungsi delfile tidak disupport!")
+    end
+end
+
+deleteBtn.MouseButton1Click:Connect(function()
+    deleteMacroFile(nameBox.Text)
 end)
 
 local function getRootFromModel(model)
@@ -721,7 +749,6 @@ function startPlayback()
                 local requiredCost = action.CashCost or 100
 
                 if action.Type == "ADD" then
-                    -- AUTO-RETRY PLACE: Terus tunggu cash dan ulang remote sampai tower sukses ter-spawn
                     local newlySpawnedModel = nil
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
@@ -771,7 +798,6 @@ function startPlayback()
                 elseif action.Type == "UPGRADE" or action.Type == "SELL" then
                     local targetIdx = action.TargetIndex or 1
                     
-                    -- AUTO-RETRY UPGRADE/SELL: Terus tunggu cash dan model siap, lalu ulangi sampai sukses
                     local successAction = false
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
