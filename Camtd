@@ -1,4 +1,4 @@
--- Macro TD v34.29 - String ID & Attribute Upgrade Fix
+-- Macro TD v34.30 - Bugfix String Concatenation & Macro Loading Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.29 (String ID Fix)"
+title.Text = "Macro TD v34.30 (Loading Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -195,11 +195,11 @@ UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 UIListLayout.Padding = UDim.new(0, 2)
 
 local function logConsole(msg)
-    print("[MACRO TD]: " + msg)
+    print("[MACRO TD]: " .. tostring(msg))
     local logText = Instance.new("TextLabel")
     logText.Size = UDim2.new(1, -10, 0, 16)
     logText.BackgroundTransparency = 1
-    logText.Text = " " .. msg
+    logText.Text = " " .. tostring(msg)
     logText.TextColor3 = Color3.fromRGB(180, 220, 180)
     logText.TextXAlignment = Enum.TextXAlignment.Left
     logText.Font = Enum.Font.Code
@@ -527,7 +527,7 @@ function loadMacroFromFile(mName)
     end)
     
     if success then
-        logConsole("Berhasil Load (Kompatibel): " .. mName .. " (" .. #recordedData .. " aksi)")
+        logConsole("Berhasil Load: " .. mName .. " (" .. #recordedData .. " aksi)")
         return true
     else
         logConsole("Gagal membaca file makro!")
@@ -659,7 +659,6 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     return 1
 end
 
--- PENGAMBILAN IDENTIFIER AMAN: Menggunakan ID string/atribut dari model agar server tidak menolak objek model fisik
 local function rebuildArgsForPlayback(oldArgs, newModel, recordedIDs)
     if not newModel then return oldArgs end
     local primaryID = getPrimaryID(newModel)
@@ -669,7 +668,7 @@ local function rebuildArgsForPlayback(oldArgs, newModel, recordedIDs)
         for k, v in pairs(tbl) do
             if type(v) == "table" then
                 if v.__isSerializedInstance then
-                    res[k] = primaryID or newModel -- Mengirim ID string/atribut utama alih-alih model mentah
+                    res[k] = primaryID or newModel
                 else
                     res[k] = processTable(v)
                 end
@@ -832,7 +831,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - String ID Active)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Active)...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -937,7 +936,6 @@ function startPlayback()
                             local cashBeforePlay = getPlayerCash()
                             local playArgs = rebuildArgsForPlayback(realArgs, currentModel, action.TowerIDs)
                             
-                            -- PENGIRIMAN MULTI-VARIASI UNTUK MEMASTIKAN SERVER MENERIMA ID/MODEL
                             pcall(function()
                                 if retryCount <= 2 then
                                     if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
