@@ -1,4 +1,4 @@
--- Macro TD v34.7 - Precise Close-Distance Tower Targeting & Instance Fix
+-- Macro TD v34.8 - ID-Based Argument Matching for Adjacent Towers Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -104,7 +104,6 @@ local function deserializeVal(v)
         elseif v.__type == "Vector3" then
             return Vector3.new(v.x, v.y, v.z)
         elseif v.__type == "Instance" then
-            -- Mempertahankan instance sebagai placeholder agar bisa direkonstruksi saat playback
             return {__isSerializedInstance = true, name = v.name, className = v.className}
         else
             local res = {}
@@ -154,7 +153,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.7 (Precise Target Fixed)"
+title.Text = "Macro TD v34.8 (ID-Match Fixed)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -572,20 +571,50 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
--- Pencocokan Indeks Tower Berdasarkan Referensi Model Langsung
-local function resolveTargetIndexByModel(targetModel)
-    if not targetModel then return 1 end
-    
-    for idx, tInfo in pairs(recordedTowers) do
-        if tInfo.Model and tInfo.Model == targetModel then
-            return idx
+-- PERBAIKAN: Pencocokan Indeks Berbasis Argumen ID & Model Fisik (Akurat 100% untuk Tower Berdekatan)
+local function resolveTargetIndex(args, targetModel)
+    -- 1. Cocokkan langsung dengan referensi objek Model fisik
+    if targetModel then
+        for idx, tInfo in pairs(recordedTowers) do
+            if tInfo.Model and tInfo.Model == targetModel then
+                return idx
+            end
         end
     end
     
-    local targetRoot = getRootFromModel(targetModel)
-    local targetPos = targetRoot and targetRoot.Position or (targetModel.PrimaryPart and targetModel.PrimaryPart.Position)
-    if not targetPos and targetModel:IsA("BasePart") then
-        targetPos = targetModel.Position
+    -- 2. Cocokkan ID/UUID yang dikirim di dalam argumen remote game dengan recordedTowers.IDs
+    local function searchIDInTable(tbl)
+        for _, v in pairs(tbl) do
+            local vStr = tostring(v)
+            for idx, tInfo in pairs(recordedTowers) do
+                if tInfo.IDs then
+                    for _, id in ipairs(tInfo.IDs) do
+                        if tostring(id) == vStr and #vStr > 2 then -- Hindari angka kecil/umum
+                            return idx
+                        end
+                    end
+                end
+            end
+            if type(v) == "table" then
+                local found = searchIDInTable(v)
+                if found then return found end
+            end
+        end
+        return nil
+    end
+    
+    local matchedById = searchIDInTable(args)
+    if matchedById then
+        return matchedById
+    end
+    
+    -- 3. Fallback terakhir berdasarkan jarak posisi terdekat (Minimum Distance)
+    local targetRoot = targetModel and getRootFromModel(targetModel)
+    local targetPos = targetRoot and targetRoot.Position or (targetModel and targetModel.PrimaryPart and targetModel.PrimaryPart.Position)
+    
+    if not targetPos then
+        local cf = getCFrameFromArgs(args)
+        if cf then targetPos = cf.Position end
     end
     
     if targetPos then
@@ -606,7 +635,6 @@ local function resolveTargetIndexByModel(targetModel)
     return 1
 end
 
--- Rekonstruksi Argumen untuk Playback dengan Penggantian Instance yang Akurat
 local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     if not newModel then return oldArgs end
     local newPrimaryID = getPrimaryID(newModel)
@@ -657,7 +685,7 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel)
     return processTable(oldArgs)
 end
 
--- Hook Remote dengan Deteksi Target Akurat & Penyimpanan Model Instance
+-- Hook Remote dengan Deteksi Target ID Presisi
 if not getgenv().MacroHookedTD then
     getgenv().MacroHookedTD = true
     local oldNamecall
@@ -696,7 +724,8 @@ if not getgenv().MacroHookedTD then
                             
                             local actionEntry = {
                                 Type = "ADD", Time = timeStamp, Remote = self, Method = method,
-                                Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = 150
+                                Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = 150,
+                                TowerIDs = recordedTowers[currentIdx].IDs
                             }
                             table.insert(recordedData, actionEntry)
                             local entryIndex = #recordedData
@@ -713,7 +742,7 @@ if not getgenv().MacroHookedTD then
                             
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
                             local targetModel = getTowerFromArgs(args)
-                            local targetIdx = resolveTargetIndexByModel(targetModel)
+                            local targetIdx = resolveTargetIndex(args, targetModel)
                             local actionType = (rName == "TowerUpgrade" and "UPGRADE" or "SELL")
                             local targetIDs = recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs or nil
                             
