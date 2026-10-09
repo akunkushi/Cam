@@ -1,4 +1,4 @@
--- Macro TD v34.19 - Fix Upgrade Speed Delay & Anti-Double Placement
+-- Macro TD v34.20 - Fix Real Upgrade & Speed Stability
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.19 (Fix Upgrade 2x)"
+title.Text = "Macro TD v34.20 (Fix Real Upgrade)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -823,7 +823,7 @@ function startPlayback()
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
     
     setGameSpeed(currentPlaybackSpeed)
-    logConsole(string.format("PLAYBACK STARTED (Speed: %.1fx | Anti-Double Active)...", currentPlaybackSpeed))
+    logConsole(string.format("PLAYBACK STARTED (Speed: %.1fx | Real Upgrade Fix)...", currentPlaybackSpeed))
     
     task.spawn(function()
         local playbackStart = tick()
@@ -901,7 +901,7 @@ function startPlayback()
                     local targetIdx = action.TargetIndex or action.TowerIndex or 1
                     
                     local successAction = false
-                    local retryCount = 0
+                    local attemptCount = 0
                     
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
@@ -925,37 +925,38 @@ function startPlayback()
                         end
                         
                         if currentModel then
-                            -- Jeda sebelum kirim remote menggunakan waktu nyata yang stabil
-                            task.wait(0.2)
+                            -- Beri jeda ekstra stabil agar server selesai mendaftarkan tower baru sebelum di-upgrade
+                            task.wait(0.3)
                             local cashBeforePlay = getPlayerCash()
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
                             
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
                             else remoteObj:FireServer(unpack(playArgs)) end
                             
-                            -- Jeda tunggu diperbesar ke 0.5 detik nyata agar GUI text & server sempat update
-                            task.wait(0.5)
+                            -- Waktu tunggu verifikasi cash benar-benar berkurang/bertambah
+                            task.wait(0.8)
                             local cashAfterPlay = getPlayerCash()
                             
                             if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
                                 successAction = true
-                                logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE", index, #recordedData, targetIdx))
+                                logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE (Real Verified)", index, #recordedData, targetIdx))
                             elseif action.Type == "SELL" and cashBeforePlay < cashAfterPlay then
                                 successAction = true
-                                logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
+                                logConsole(string.format("[%d/%d] SELL Tower #%d DONE (Real Verified)", index, #recordedData, targetIdx))
                             else
-                                retryCount = retryCount + 1
-                                -- Jika sudah dikirim 2 kali namun cash terbaca sama, langsung anggap sukses 
-                                -- agar tidak macet/skip berkepanjangan di kecepatan 2x
-                                if retryCount >= 2 then
-                                    successAction = true
-                                    logConsole(string.format("[%d/%d] %s Tower #%d Done (Force Verified)", index, #recordedData, action.Type, targetIdx))
-                                else
-                                    task.wait(0.3)
+                                attemptCount = attemptCount + 1
+                                logConsole(string.format("[%d/%d] %s Tower #%d Belum Merespon Server, Mengirim Ulang (%d)...", index, #recordedData, action.Type, targetIdx, attemptCount))
+                                
+                                -- Jika sudah mencoba 4 kali namun server belum memotong cash, kirim ulang dengan argumen mentah asli untuk memastikan
+                                if attemptCount >= 4 then
+                                    if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
+                                    else remoteObj:FireServer(unpack(realArgs)) end
+                                    task.wait(0.5)
                                 end
+                                task.wait(0.5)
                             end
                         else
-                            logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
+                            logConsole(string.format("[%d/%d] Model Tower #%d Belum Siap, Menunggu...", index, #recordedData, targetIdx))
                             task.wait(0.5)
                         end
                     until successAction or not isPlaying
