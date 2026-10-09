@@ -1,4 +1,4 @@
--- Macro TD v34.32 - Exact Argument Preservation Fix
+-- Macro TD v34.33 - Fixed Recording & Post-Update Compatibility
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.32 (Exact Args Fix)"
+title.Text = "Macro TD v34.33 (Post-Update Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -103,7 +103,7 @@ local nameBox = Instance.new("TextBox")
 nameBox.Size = UDim2.new(0, 105, 0, 28)
 nameBox.Position = UDim2.new(0, 15, 0, 45)
 nameBox.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-nameBox.Text = "makro1"
+nameBox.Text = "makro_baru"
 nameBox.PlaceholderText = "Nama..."
 nameBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 nameBox.Font = Enum.Font.SourceSans
@@ -580,6 +580,19 @@ local function getCFrameFromArgs(args)
     return nil
 end
 
+-- HELPER YANG HILANG SEBELUMNYA TELAH DIKEMBALIKAN DI SINI:
+local function getTowerFromArgs(args)
+    for _, v in pairs(args) do
+        if typeof(v) == "Instance" and v:IsA("Model") then
+            return v
+        elseif type(v) == "table" then
+            local model = getTowerFromArgs(v)
+            if model then return model end
+        end
+    end
+    return nil
+end
+
 local function findTowerNearPosition(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
@@ -639,10 +652,8 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     return 1
 end
 
--- PEREKONSTRUKSI ARGUMEN TEPAT: Mempertahankan struktur asli rekaman, hanya mengganti objek tower lama dengan model baru
 local function rebuildArgsForPlayback(oldArgs, newModel)
     if not newModel then return oldArgs end
-    
     local function recursiveProcess(tbl)
         local res = {}
         for k, v in pairs(tbl) do
@@ -659,7 +670,7 @@ local function rebuildArgsForPlayback(oldArgs, newModel)
                     res[k] = newModel
                 end
             else
-                res[k] = v -- Mempertahankan angka asli (seperti nomor path/tier upgrade) secara utuh 100%
+                res[k] = v
             end
         end
         return res
@@ -704,14 +715,12 @@ if not getgenv().MacroHookedTD then
                             recordedTowers[currentIdx] = { 
                                 Index = currentIdx, 
                                 PositionCF = cf, 
-                                IDs = newlySpawnedModel and extractAllIDsFromModel(newlySpawnedModel) or {},
                                 Model = newlySpawnedModel
                             }
                             
                             local actionEntry = {
                                 Type = "ADD", Time = timeStamp, Remote = self, Method = method,
-                                Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = 150,
-                                TowerIDs = recordedTowers[currentIdx].IDs
+                                Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = 150
                             }
                             table.insert(recordedData, actionEntry)
                             local entryIndex = #recordedData
@@ -730,12 +739,11 @@ if not getgenv().MacroHookedTD then
                             local targetModel = getTowerFromArgs(args)
                             local targetIdx = resolveTargetIndex(args, targetModel, nil)
                             local actionType = (rName == "TowerUpgrade" and "UPGRADE" or "SELL")
-                            local targetIDs = recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs or nil
                             
                             local actionEntry = {
                                 Type = actionType, Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TargetIndex = targetIdx, CashCost = 150,
-                                TowerIDs = targetIDs, PositionCF = targetModel and targetModel:GetPivot() or nil
+                                PositionCF = targetModel and targetModel:GetPivot() or nil
                             }
                             table.insert(recordedData, actionEntry)
                             local entryIndex = #recordedData
@@ -778,7 +786,7 @@ recordBtn.MouseButton1Click:Connect(function()
         recordStartTime = tick()
         recordBtn.Text = "Record: ON"
         recordBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        logConsole("RECORDING STARTED...")
+        logConsole("RECORDING STARTED (New Game Version)...")
     else
         recordBtn.Text = "Record: OFF"
         recordBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
@@ -795,7 +803,7 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Exact Args Active)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. ")...")
     
     applyGameSpeed(selectedSpeed)
     
@@ -898,7 +906,6 @@ function startPlayback()
                         if currentModel then
                             task.wait(0.2 / selectedSpeed)
                             local cashBeforePlay = getPlayerCash()
-                            -- Menggunakan argumen asli hasil rekam, hanya menukar referensi tower dengan model aktif saat ini
                             local playArgs = rebuildArgsForPlayback(realArgs, currentModel)
                             
                             pcall(function()
@@ -962,7 +969,7 @@ task.spawn(function()
                 if pg then
                     for _, gui in ipairs(pg:GetDescendants()) do
                         if gui:IsA("TextLabel") or gui:IsA("TextButton") then
-                            local txt = gui.Text:lower()
+                            let txt = gui.Text:lower()
                             if txt:find("wave") or txt:find("toilet") or txt:find("units:") or txt:find("completed") then
                                 matchStarted = true
                                 break
