@@ -1,4 +1,4 @@
--- Macro TD v34.16 - Anti-Double Placement & Fixed Upgrade Loop (Mobile Optimized)
+-- Macro TD v34.23 - Server Response Verification for Upgrades
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -55,7 +55,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.16 (Anti-Double Place)"
+title.Text = "Macro TD v34.23 (Server Response Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -161,39 +161,28 @@ autoElevatorBtn.TextSize = 11
 autoElevatorBtn.Parent = contentFrame
 
 local autoPlayBtn = Instance.new("TextButton")
-autoPlayBtn.Size = UDim2.new(0, 330, 0, 28)
+autoPlayBtn.Size = UDim2.new(0, 160, 0, 28)
 autoPlayBtn.Position = UDim2.new(0, 15, 0, 115)
 autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-autoPlayBtn.Text = "Auto Play Rejoin: OFF"
+autoPlayBtn.Text = "Auto Play Match: OFF"
 autoPlayBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 autoPlayBtn.Font = Enum.Font.SourceSansBold
 autoPlayBtn.TextSize = 11
 autoPlayBtn.Parent = contentFrame
 
--- Tombol Game Speed 1.5x & 2x
-local speed15Btn = Instance.new("TextButton")
-speed15Btn.Size = UDim2.new(0, 160, 0, 28)
-speed15Btn.Position = UDim2.new(0, 15, 0, 150)
-speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-speed15Btn.Text = "Speed 1.5x: OFF"
-speed15Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-speed15Btn.Font = Enum.Font.SourceSansBold
-speed15Btn.TextSize = 11
-speed15Btn.Parent = contentFrame
-
-local speed20Btn = Instance.new("TextButton")
-speed20Btn.Size = UDim2.new(0, 160, 0, 28)
-speed20Btn.Position = UDim2.new(0, 185, 0, 150)
-speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-speed20Btn.Text = "Speed 2.0x: OFF"
-speed20Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-speed20Btn.Font = Enum.Font.SourceSansBold
-speed20Btn.TextSize = 11
-speed20Btn.Parent = contentFrame
+local speedBtn = Instance.new("TextButton")
+speedBtn.Size = UDim2.new(0, 160, 0, 28)
+speedBtn.Position = UDim2.new(0, 185, 0, 115)
+speedBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 90)
+speedBtn.Text = "Speed: x1"
+speedBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+speedBtn.Font = Enum.Font.SourceSansBold
+speedBtn.TextSize = 11
+speedBtn.Parent = contentFrame
 
 local logFrame = Instance.new("ScrollingFrame")
-logFrame.Size = UDim2.new(0, 330, 0, 215)
-logFrame.Position = UDim2.new(0, 15, 0, 185)
+logFrame.Size = UDim2.new(0, 330, 0, 250)
+logFrame.Position = UDim2.new(0, 15, 0, 150)
 logFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
 logFrame.BorderSizePixel = 0
 logFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -230,7 +219,7 @@ minimizeBtn.MouseButton1Click:Connect(function()
         minimizeBtn.Text = "+"
     else
         contentFrame.Visible = true
-        mainFrame.Size = UDim2.new(0, 360, 0, 450)
+        mainFrame.Size = UDim2.new(0, 360, 0, 415)
         minimizeBtn.Text = "-"
     end
 end)
@@ -238,12 +227,14 @@ end)
 -- ==================== VARIABEL & LOGIKA UTAMA ====================
 local isRecording = false
 local isPlaying = false
-local autoPlayOnRejoin = false
+local autoPlayMatch = false
 local autoElevator = false
 local selectedElevator = "Elevator2"
 
-local speed15Active = false
-local speed20Active = false
+local speedOptions = {1, 1.5, 2}
+local speedNames = {"x1", "x1.5", "x2"}
+local currentSpeedIndex = 1
+local selectedSpeed = 1
 
 local recordedData = {}
 local recordedTowers = {}
@@ -256,54 +247,6 @@ local elevatorOptions = {
     {Name = "Cameraman HQ", Code = "Elevator12"}
 }
 local currentElevatorIndex = 1
-
-local function setGameSpeed(multiplier)
-    pcall(function()
-        local Event = ReplicatedStorage:FindFirstChild("ModuleLoader") 
-            and ReplicatedStorage.ModuleLoader.Shared.Network.RemoteFunction.ChangeSpeed
-        if Event then
-            Event:InvokeServer(multiplier)
-        end
-    end)
-end
-
-speed15Btn.MouseButton1Click:Connect(function()
-    speed15Active = not speed15Active
-    if speed15Active then
-        speed20Active = false
-        speed20Btn.Text = "Speed 2.0x: OFF"
-        speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        speed15Btn.Text = "Speed 1.5x: ON"
-        speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        setGameSpeed(1.5)
-        logConsole("Speed Game diubah ke 1.5x")
-    else
-        speed15Btn.Text = "Speed 1.5x: OFF"
-        speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        setGameSpeed(1)
-        logConsole("Speed Game dikembalikan ke Normal (1x)")
-    end
-    saveConfig()
-end)
-
-speed20Btn.MouseButton1Click:Connect(function()
-    speed20Active = not speed20Active
-    if speed20Active then
-        speed15Active = false
-        speed15Btn.Text = "Speed 1.5x: OFF"
-        speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        speed20Btn.Text = "Speed 2.0x: ON"
-        speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        setGameSpeed(2.0)
-        logConsole("Speed Game diubah ke 2.0x")
-    else
-        speed20Btn.Text = "Speed 2.0x: OFF"
-        speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        setGameSpeed(1)
-        logConsole("Speed Game dikembalikan ke Normal (1x)")
-    end
-    saveConfig()
-end)
 
 local lastValidCash = 500
 local function getPlayerCash()
@@ -319,7 +262,7 @@ local function getPlayerCash()
         local pg = LocalPlayer:FindFirstChild("PlayerGui")
         if pg then
             for _, gui in ipairs(pg:GetDescendants()) do
-                if gui:IsA("TextLabel") then
+                if gui:IsA("TextLabel") or gui:IsA("TextButton") then
                     local nameLower = gui.Name:lower()
                     local text = gui.Text
                     if nameLower:find("cash") or nameLower:find("money") or nameLower:find("coin") or nameLower:find("balance") then
@@ -336,6 +279,24 @@ local function getPlayerCash()
     end)
     return success and cash or lastValidCash
 end
+
+local function applyGameSpeed(speedVal)
+    pcall(function()
+        local remote = ReplicatedStorage:FindFirstChild("ModuleLoader")
+        if remote then
+            remote.Shared.Network.RemoteFunction.ChangeSpeed:InvokeServer(speedVal)
+        end
+    end)
+end
+
+speedBtn.MouseButton1Click:Connect(function()
+    currentSpeedIndex = currentSpeedIndex + 1
+    if currentSpeedIndex > #speedOptions then currentSpeedIndex = 1 end
+    selectedSpeed = speedOptions[currentSpeedIndex]
+    speedBtn.Text = "Speed: " .. speedNames[currentSpeedIndex]
+    applyGameSpeed(selectedSpeed)
+    saveConfig()
+end)
 
 local function teleportToElevator(elevatorCode)
     local char = LocalPlayer.Character
@@ -436,13 +397,12 @@ end)
 function saveConfig()
     if not writefile then return end
     local cfg = {
-        autoPlay = autoPlayOnRejoin,
+        autoPlayMatch = autoPlayMatch,
         autoElevator = autoElevator,
         selectedElevator = selectedElevator,
         elevatorIndex = currentElevatorIndex,
         selectedMacro = nameBox.Text,
-        speed15 = speed15Active,
-        speed20 = speed20Active
+        gameSpeedIndex = currentSpeedIndex
     }
     pcall(function()
         writefile(FOLDER_NAME .. "/config.json", HttpService:JSONEncode(cfg))
@@ -454,30 +414,24 @@ function loadConfig()
     pcall(function()
         local data = HttpService:JSONDecode(readfile(FOLDER_NAME .. "/config.json"))
         if data then
-            autoPlayOnRejoin = data.autoPlay or false
+            autoPlayMatch = data.autoPlayMatch or data.autoPlay or false
             autoElevator = data.autoElevator or false
             selectedElevator = data.selectedElevator or "Elevator2"
             currentElevatorIndex = data.elevatorIndex or 1
             if data.selectedMacro then nameBox.Text = data.selectedMacro end
             
-            speed15Active = data.speed15 or false
-            speed20Active = data.speed20 or false
+            if data.gameSpeedIndex then
+                currentSpeedIndex = data.gameSpeedIndex
+                if currentSpeedIndex > #speedOptions then currentSpeedIndex = 1 end
+                selectedSpeed = speedOptions[currentSpeedIndex]
+                speedBtn.Text = "Speed: " .. speedNames[currentSpeedIndex]
+            end
             
-            autoPlayBtn.Text = autoPlayOnRejoin and "Auto Play Rejoin: ON" or "Auto Play Rejoin: OFF"
-            autoPlayBtn.BackgroundColor3 = autoPlayOnRejoin and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
+            autoPlayBtn.Text = autoPlayMatch and "Auto Play Match: ON" or "Auto Play Match: OFF"
+            autoPlayBtn.BackgroundColor3 = autoPlayMatch and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
             
             autoElevatorBtn.Text = autoElevator and "Auto Elevator: ON" or "Auto Elevator: OFF"
             autoElevatorBtn.BackgroundColor3 = autoElevator and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
-            
-            if speed15Active then
-                speed15Btn.Text = "Speed 1.5x: ON"
-                speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-                setGameSpeed(1.5)
-            elseif speed20Active then
-                speed20Btn.Text = "Speed 2.0x: ON"
-                speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-                setGameSpeed(2.0)
-            end
             
             elevatorSelectBtn.Text = "Map: " .. elevatorOptions[currentElevatorIndex].Name
         end
@@ -485,12 +439,12 @@ function loadConfig()
 end
 
 autoPlayBtn.MouseButton1Click:Connect(function()
-    autoPlayOnRejoin = not autoPlayOnRejoin
-    if autoPlayOnRejoin then
-        autoPlayBtn.Text = "Auto Play Rejoin: ON"
+    autoPlayMatch = not autoPlayMatch
+    if autoPlayMatch then
+        autoPlayBtn.Text = "Auto Play Match: ON"
         autoPlayBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
     else
-        autoPlayBtn.Text = "Auto Play Rejoin: OFF"
+        autoPlayBtn.Text = "Auto Play Match: OFF"
         autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
     end
     saveConfig()
@@ -920,7 +874,9 @@ function startPlayback()
     isPlaying = true
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    logConsole("PLAYBACK STARTED (Anti-Double Place Active)...")
+    logConsole("PLAYBACK STARTED (Speed: " .. speedNames[currentSpeedIndex] .. " - Server Verification Active)...")
+    
+    applyGameSpeed(selectedSpeed)
     
     task.spawn(function()
         local playbackStart = tick()
@@ -928,7 +884,7 @@ function startPlayback()
         
         for index, action in ipairs(recordedData) do
             if not isPlaying then break end
-            local waitTime = action.Time - (tick() - playbackStart)
+            local waitTime = (action.Time - (tick() - playbackStart)) / selectedSpeed
             if waitTime > 0 then task.wait(waitTime) end
             if not isPlaying then break end
             
@@ -944,7 +900,7 @@ function startPlayback()
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
                             logConsole(string.format("[%d/%d] Menunggu Cash Place (Butuh: %d | Cash: %d)...", index, #recordedData, requiredCost, getPlayerCash()))
-                            task.wait(1)
+                            task.wait(1 / selectedSpeed)
                         end
                         if not isPlaying then return end
 
@@ -957,13 +913,13 @@ function startPlayback()
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
                             else remoteObj:FireServer(unpack(realArgs)) end
                             hasFired = true
-                            task.wait(0.3)
+                            task.wait(0.3 / selectedSpeed)
                         end
                         
                         local timer = 0
                         repeat
-                            task.wait(0.1)
-                            timer = timer + 0.1
+                            task.wait(0.1 / selectedSpeed)
+                            timer = timer + (0.1 / selectedSpeed)
                             for _, v in ipairs(Workspace:GetDescendants()) do
                                 if v:IsA("Model") and not beforeSnapshot[v] and v ~= LocalPlayer.Character then
                                     if getRootFromModel(v) then
@@ -971,7 +927,7 @@ function startPlayback()
                                     end
                                 end
                             end
-                        until newlySpawnedModel or timer >= 2.0
+                        until newlySpawnedModel or timer >= (2.0 / selectedSpeed)
                         
                         if not newlySpawnedModel and action.PositionCF then
                             local excludeInstances = {}
@@ -981,7 +937,7 @@ function startPlayback()
                         
                         if not newlySpawnedModel then
                             logConsole(string.format("[%d/%d] PLACE Tower #%d Menunggu Model...", index, #recordedData, action.TowerIndex or action.TargetIndex))
-                            task.wait(0.5)
+                            task.wait(0.5 / selectedSpeed)
                         end
                     until newlySpawnedModel or not isPlaying
 
@@ -993,13 +949,12 @@ function startPlayback()
 
                 elseif action.Type == "UPGRADE" or action.Type == "SELL" then
                     local targetIdx = action.TargetIndex or action.TowerIndex or 1
-                    local successAction = false
-                    local retryCount = 0
                     
+                    local successAction = false
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
                             logConsole(string.format("[%d/%d] Menunggu Cash %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
-                            task.wait(1)
+                            task.wait(1 / selectedSpeed)
                         end
                         if not isPlaying then return end
 
@@ -1018,37 +973,32 @@ function startPlayback()
                         end
                         
                         if currentModel then
-                            task.wait(0.2)
-                            local cashBeforePlay = getPlayerCash()
+                            task.wait(0.2 / selectedSpeed)
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel)
                             
-                            if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
-                            else remoteObj:FireServer(unpack(playArgs)) end
-                            
-                            -- Waktu tunggu diperpanjang untuk stabilitas mobile (0.5 detik)
-                            task.wait(0.5)
-                            local cashAfterPlay = getPlayerCash()
-                            retryCount = retryCount + 1
-                            
-                            if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
-                                successAction = true
-                                logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE", index, #recordedData, targetIdx))
-                            elseif action.Type == "SELL" and cashBeforePlay < cashAfterPlay then
-                                successAction = true
-                                logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
-                            else
-                                -- BATAS PERCOBAAN: Jika sudah mencoba 3 kali namun cash belum terpotong, anggap berhasil/lanjut untuk mencegah macet total
-                                if retryCount >= 3 then
-                                    successAction = true
-                                    logConsole(string.format("[%d/%d] %s Tower #%d Dipaksa Lanjut (Batas Percobaan Tercapai)", index, #recordedData, action.Type, targetIdx))
-                                else
-                                    logConsole(string.format("[%d/%d] %s Tower #%d Menunggu Respon Server (%d/3)...", index, #recordedData, action.Type, targetIdx, retryCount))
-                                    task.wait(0.5)
+                            -- VERIFIKASI RESPON SERVER: Memastikan server benar-benar menerima dan memproses upgrade
+                            local serverAccepted = true
+                            local invokeSuccess, invokeRes = pcall(function()
+                                if action.Method == "InvokeServer" then 
+                                    local res = remoteObj:InvokeServer(unpack(playArgs))
+                                    -- Jika server mengembalikan nilai false/nil sebagai tanda gagal
+                                    if res == false then serverAccepted = false end
+                                else 
+                                    remoteObj:FireServer(unpack(playArgs)) 
                                 end
+                            end)
+                            
+                            if invokeSuccess and serverAccepted then
+                                successAction = true
+                                logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
+                                task.wait(0.4 / selectedSpeed)
+                            else
+                                logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server, Mencoba Lagi...", index, #recordedData, action.Type, targetIdx))
+                                task.wait(1 / selectedSpeed)
                             end
                         else
                             logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
-                            task.wait(1)
+                            task.wait(0.5 / selectedSpeed)
                         end
                     until successAction or not isPlaying
                 end
@@ -1074,15 +1024,38 @@ playBtn.MouseButton1Click:Connect(function()
     startPlayback()
 end)
 
+-- OTOMATISASI MATCH BARU
+task.spawn(function()
+    while true do
+        task.wait(3)
+        if autoPlayMatch and not isPlaying then
+            local matchStarted = false
+            pcall(function()
+                local pg = LocalPlayer:FindFirstChild("PlayerGui")
+                if pg then
+                    for _, gui in ipairs(pg:GetDescendants()) do
+                        if gui:IsA("TextLabel") or gui:IsA("TextButton") then
+                            local txt = gui.Text:lower()
+                            if txt:find("wave") or txt:find("toilet") or txt:find("units:") or txt:find("completed") then
+                                matchStarted = true
+                                break
+                            end
+                        end
+                    end
+                end
+            end)
+            
+            if matchStarted then
+                logConsole("Match/Replay baru terdeteksi! Memuat makro otomatis...")
+                task.wait(2)
+                if loadMacroFromFile(nameBox.Text) then
+                    startPlayback()
+                    task.wait(20)
+                end
+            end
+        end
+    end
+end)
+
 loadConfig()
 logConsole("Macro Ready.")
-
-if autoPlayOnRejoin then
-    task.spawn(function()
-        logConsole("Auto Play Rejoin Aktif. Memuat file...")
-        task.wait(2)
-        if loadMacroFromFile(nameBox.Text) then
-            startPlayback()
-        end
-    end)
-end
