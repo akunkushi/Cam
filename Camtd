@@ -1,4 +1,4 @@
--- Macro TD v34.24 - Persistent Game Speed & Rejoin Config
+-- Macro TD v34.25 - Strict Tower Index Mapping & Persistent Speed
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -57,7 +57,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.24 (Persistent Speed)"
+title.Text = "Macro TD v34.25 (Strict Index)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -253,6 +253,7 @@ local recordStartTime = 0
 
 local lastClickedTower = nil
 
+-- Deteksi sentuhan HP yang lebih akurat pada menara yang disentuh
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if isRecording and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
         local mousePos = UserInputService:GetMouseLocation()
@@ -358,12 +359,10 @@ function loadConfig()
                 speed15Btn.Text = "Speed 1.5x: ON"
                 speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
                 setGameSpeed(1.5)
-                logConsole("Loaded Speed: x1.5 (Active)")
             elseif speed20Active then
                 speed20Btn.Text = "Speed 2x: ON"
                 speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
                 setGameSpeed(2)
-                logConsole("Loaded Speed: x2 (Active)")
             end
             
             elevatorSelectBtn.Text = "Map: " .. elevatorOptions[currentElevatorIndex].Name
@@ -381,12 +380,10 @@ speed15Btn.MouseButton1Click:Connect(function()
         speed15Btn.Text = "Speed 1.5x: ON"
         speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
         setGameSpeed(1.5)
-        logConsole("Speed Game diubah ke x1.5")
     else
         speed15Btn.Text = "Speed 1.5x: OFF"
         speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
         setGameSpeed(1)
-        logConsole("Speed Game dikembalikan ke x1")
     end
     saveConfig()
 end)
@@ -401,12 +398,10 @@ speed20Btn.MouseButton1Click:Connect(function()
         speed20Btn.Text = "Speed 2x: ON"
         speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
         setGameSpeed(2)
-        logConsole("Speed Game diubah ke x2")
     else
         speed20Btn.Text = "Speed 2x: OFF"
         speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
         setGameSpeed(1)
-        logConsole("Speed Game dikembalikan ke x1")
     end
     saveConfig()
 end)
@@ -688,7 +683,7 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
     if typeof(targetPos) == "CFrame" then targetPos = targetPos.Position end
-    local closest, closestDist = nil, 6
+    local closest, closestDist = nil, 4 -- Batasi radius dekat agar tidak salah pilih menara tetangga
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj ~= LocalPlayer.Character then
             if not excludeInstances[obj] then
@@ -706,11 +701,19 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
+-- Resolve Target Index yang dioptimalkan agar tidak salah pilih menara berdekatan
 local function resolveTargetIndex(args, targetModel, actionPos)
+    -- 1. Utamakan menara hasil sentuhan layar HP terakhir secara presisi
     if targetModel and instanceToTowerIndex[targetModel] then
         return instanceToTowerIndex[targetModel]
     end
+    if lastClickedTower and instanceToTowerIndex[lastClickedTower] then
+        local idx = instanceToTowerIndex[lastClickedTower]
+        lastClickedTower = nil -- Reset setelah digunakan
+        return idx
+    end
 
+    -- 2. Cari berdasarkan ID yang cocok
     local function searchIDInTable(tbl)
         for _, v in pairs(tbl) do
             local vStr = tostring(v)
@@ -734,11 +737,9 @@ local function resolveTargetIndex(args, targetModel, actionPos)
     local matchedById = searchIDInTable(args)
     if matchedById then return matchedById end
     
-    local targetRoot = targetModel and getRootFromModel(targetModel)
-    local targetPos = targetRoot and targetRoot.Position or (targetModel and targetModel.PrimaryPart and targetModel.PrimaryPart.Position)
-    if not targetPos and actionPos then
-        targetPos = (typeof(actionPos) == "CFrame") and actionPos.Position or actionPos
-    end
+    -- 3. Fallback posisi terdekat
+    local targetPos = actionPos
+    if typeof(targetPos) == "CFrame" then targetPos = targetPos.Position end
     if not targetPos then
         local cf = getCFrameFromArgs(args)
         if cf then targetPos = cf.Position end
@@ -1056,17 +1057,11 @@ function startPlayback()
                         end
                         if not isPlaying then return end
 
+                        -- STRICT MAPPING: Gunakan sessionTowers berdasarkan index asli yang tercatat
                         local currentModel = sessionTowers[targetIdx]
                         if not currentModel or not currentModel.Parent then
                             if recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
                                 currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF)
-                            elseif action.PositionCF then
-                                currentModel = findTowerNearPosition(action.PositionCF)
-                            else
-                                local cfFromArgs = getCFrameFromArgs(realArgs)
-                                if cfFromArgs then
-                                    currentModel = findTowerNearPosition(cfFromArgs)
-                                end
                             end
                         end
                         
