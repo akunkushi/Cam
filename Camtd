@@ -1,4 +1,4 @@
--- Macro TD v34.29 - Clustered Towers Indexing & Exclusion Fix
+-- Macro TD v34.30 - Dynamic Model Refresh for Clustered Towers
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -57,7 +57,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.29 (Cluster Fix)"
+title.Text = "Macro TD v34.30 (Dynamic Refresh)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -1014,7 +1014,6 @@ function startPlayback()
                             task.wait(0.3 / currentSpeed)
                         end
                         
-                        -- Pengecualian model agar tidak mengambil tower yang sudah terdaftar
                         local timer = 0
                         repeat
                             task.wait(0.1)
@@ -1100,6 +1099,17 @@ function startPlayback()
                                 if action.Type == "UPGRADE" and costChange > 0 and costChange < 100000 then
                                     successAction = true
                                     if costChange > 0 then action.CashCost = costChange end
+                                    
+                                    -- DYNAMIC REFRESH: Perbarui referensi model karena game memperbarui model saat upgrade
+                                    task.wait(0.1)
+                                    local excludeInstances = {}
+                                    for idx, t in pairs(sessionTowers) do if idx ~= targetIdx then excludeInstances[t] = true end end
+                                    local targetPos = (recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF) or currentModel:GetPivot()
+                                    local refreshedModel = findTowerNearPosition(targetPos, excludeInstances)
+                                    if refreshedModel then
+                                        sessionTowers[targetIdx] = refreshedModel
+                                        sessionTowerIDs[targetIdx] = extractAllIDsFromModel(refreshedModel)
+                                    end
                                     break
                                 elseif action.Type == "SELL" and costChange < 0 then
                                     successAction = true
