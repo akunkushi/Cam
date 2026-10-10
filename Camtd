@@ -1,4 +1,4 @@
--- Macro TD v34.24 - Persistent Game Speed & Rejoin Config
+-- Macro TD v34.25 - Strict Verification Playback Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -57,7 +57,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.24 (Persistent Speed)"
+title.Text = "Macro TD v34.25 (Strict Verify)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -1071,16 +1071,42 @@ function startPlayback()
                         end
                         
                         if currentModel then
+                            local cashBefore = getPlayerCash()
                             task.wait(0.15 / currentSpeed)
                             local currentMatchIDs = sessionTowerIDs[targetIdx] or extractAllIDsFromModel(currentModel)
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel, currentMatchIDs)
                             
-                            if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
-                            else remoteObj:FireServer(unpack(playArgs)) end
+                            if action.Method == "InvokeServer" then 
+                                remoteObj:InvokeServer(unpack(playArgs))
+                            else 
+                                remoteObj:FireServer(unpack(playArgs)) 
+                            end
                             
-                            successAction = true
-                            logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
-                            task.wait(0.35 / currentSpeed)
+                            -- VERIFIKASI KETAT: Memastikan upgrade/sell benar-benar sukses (cash berubah)
+                            local verifyTimer = 0
+                            repeat
+                                task.wait(0.1)
+                                verifyTimer = verifyTimer + 0.1
+                                local cashAfter = getPlayerCash()
+                                local costChange = cashBefore - cashAfter
+                                
+                                if action.Type == "UPGRADE" and costChange > 0 and costChange < 100000 then
+                                    successAction = true
+                                    if costChange > 0 then action.CashCost = costChange end
+                                    break
+                                elseif action.Type == "SELL" and costChange < 0 then
+                                    successAction = true
+                                    break
+                                end
+                            until verifyTimer >= 0.8
+                            
+                            if successAction then
+                                logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
+                                task.wait(0.35 / currentSpeed)
+                            else
+                                logConsole(string.format("[%d/%d] %s Tower #%d Gagal/Belum Respon Server, Mencoba Ulang...", index, #recordedData, action.Type, targetIdx))
+                                task.wait(0.5 / currentSpeed)
+                            end
                         else
                             logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
                             task.wait(1 / currentSpeed)
