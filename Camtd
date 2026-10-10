@@ -1,4 +1,4 @@
--- Macro TD v34.23 - Fix Playback Argument & Match ID
+-- Macro TD v34.24 - Persistent Game Speed & Rejoin Config
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -57,7 +57,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.23 (Fix Playback Arg)"
+title.Text = "Macro TD v34.24 (Persistent Speed)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -318,6 +318,59 @@ local function setGameSpeed(speedVal)
     end)
 end
 
+function saveConfig()
+    if not writefile then return end
+    local cfg = {
+        autoPlay = autoPlayOnRejoin,
+        autoElevator = autoElevator,
+        selectedElevator = selectedElevator,
+        elevatorIndex = currentElevatorIndex,
+        selectedMacro = nameBox.Text,
+        speed15 = speed15Active,
+        speed20 = speed20Active
+    }
+    pcall(function()
+        writefile(FOLDER_NAME .. "/config.json", HttpService:JSONEncode(cfg))
+    end)
+end
+
+function loadConfig()
+    if not readfile or not isfile or not isfile(FOLDER_NAME .. "/config.json") then return end
+    pcall(function()
+        local data = HttpService:JSONDecode(readfile(FOLDER_NAME .. "/config.json"))
+        if data then
+            autoPlayOnRejoin = data.autoPlay or false
+            autoElevator = data.autoElevator or false
+            selectedElevator = data.selectedElevator or "Elevator2"
+            currentElevatorIndex = data.elevatorIndex or 1
+            if data.selectedMacro then nameBox.Text = data.selectedMacro end
+            
+            speed15Active = data.speed15 or false
+            speed20Active = data.speed20 or false
+            
+            autoPlayBtn.Text = autoPlayOnRejoin and "Auto Play Rejoin: ON" or "Auto Play Rejoin: OFF"
+            autoPlayBtn.BackgroundColor3 = autoPlayOnRejoin and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
+            
+            autoElevatorBtn.Text = autoElevator and "Auto Elevator: ON" or "Auto Elevator: OFF"
+            autoElevatorBtn.BackgroundColor3 = autoElevator and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
+            
+            if speed15Active then
+                speed15Btn.Text = "Speed 1.5x: ON"
+                speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+                setGameSpeed(1.5)
+                logConsole("Loaded Speed: x1.5 (Active)")
+            elseif speed20Active then
+                speed20Btn.Text = "Speed 2x: ON"
+                speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+                setGameSpeed(2)
+                logConsole("Loaded Speed: x2 (Active)")
+            end
+            
+            elevatorSelectBtn.Text = "Map: " .. elevatorOptions[currentElevatorIndex].Name
+        end
+    end)
+end
+
 speed15Btn.MouseButton1Click:Connect(function()
     speed15Active = not speed15Active
     if speed15Active then
@@ -335,6 +388,7 @@ speed15Btn.MouseButton1Click:Connect(function()
         setGameSpeed(1)
         logConsole("Speed Game dikembalikan ke x1")
     end
+    saveConfig()
 end)
 
 speed20Btn.MouseButton1Click:Connect(function()
@@ -354,6 +408,7 @@ speed20Btn.MouseButton1Click:Connect(function()
         setGameSpeed(1)
         logConsole("Speed Game dikembalikan ke x1")
     end
+    saveConfig()
 end)
 
 local function teleportToElevator(elevatorCode)
@@ -451,42 +506,6 @@ autoElevatorBtn.MouseButton1Click:Connect(function()
     end
     saveConfig()
 end)
-
-function saveConfig()
-    if not writefile then return end
-    local cfg = {
-        autoPlay = autoPlayOnRejoin,
-        autoElevator = autoElevator,
-        selectedElevator = selectedElevator,
-        elevatorIndex = currentElevatorIndex,
-        selectedMacro = nameBox.Text
-    }
-    pcall(function()
-        writefile(FOLDER_NAME .. "/config.json", HttpService:JSONEncode(cfg))
-    end)
-end
-
-function loadConfig()
-    if not readfile or not isfile or not isfile(FOLDER_NAME .. "/config.json") then return end
-    pcall(function()
-        local data = HttpService:JSONDecode(readfile(FOLDER_NAME .. "/config.json"))
-        if data then
-            autoPlayOnRejoin = data.autoPlay or false
-            autoElevator = data.autoElevator or false
-            selectedElevator = data.selectedElevator or "Elevator2"
-            currentElevatorIndex = data.elevatorIndex or 1
-            if data.selectedMacro then nameBox.Text = data.selectedMacro end
-            
-            autoPlayBtn.Text = autoPlayOnRejoin and "Auto Play Rejoin: ON" or "Auto Play Rejoin: OFF"
-            autoPlayBtn.BackgroundColor3 = autoPlayOnRejoin and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
-            
-            autoElevatorBtn.Text = autoElevator and "Auto Elevator: ON" or "Auto Elevator: OFF"
-            autoElevatorBtn.BackgroundColor3 = autoElevator and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
-            
-            elevatorSelectBtn.Text = "Map: " .. elevatorOptions[currentElevatorIndex].Name
-        end
-    end)
-end
 
 autoPlayBtn.MouseButton1Click:Connect(function()
     autoPlayOnRejoin = not autoPlayOnRejoin
@@ -782,7 +801,6 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel, newMat
                             end
                         end
                     end
-                    -- HAPUS BLANKET REPLACEMENT AGAR ARGUMEN PERINTAH TIDAK RUSAK
                     if not replaced then
                         res[k] = v
                     end
