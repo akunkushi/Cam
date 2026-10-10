@@ -1,4 +1,4 @@
--- Macro TD v34.30 - Dynamic Model Refresh for Clustered Towers
+-- Macro TD v34.32 - Adaptive Search Radius & Cluster Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -57,7 +57,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.30 (Dynamic Refresh)"
+title.Text = "Macro TD v34.32 (Adaptive Cluster)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -677,33 +677,89 @@ local function extractAllIDsFromModel(inst)
 end
 
 local function getPrimaryID(inst)
-    if not inst or not inst:IsA("Instance") then return nil end
+    if not inst or not inst:IsA("Instance") then nil end
     for k, v in pairs(inst:GetAttributes()) do
         if k:lower():find("id") or k:lower():find("uuid") then return tostring(v) end
     end
     return inst.Name
 end
 
-local function findTowerNearPosition(targetPos, excludeInstances)
+-- ADAPTIVE RADIUS: Pencarian posisi tower dengan ekspansi radius bertahap (10 -> 15 -> 20 stud)
+local function findTowerNearPositionAdaptive(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
     if typeof(targetPos) == "CFrame" then targetPos = targetPos.Position end
-    local closest, closestDist = nil, 10
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model") and obj ~= LocalPlayer.Character then
-            if not excludeInstances[obj] then
-                local root = getRootFromModel(obj)
-                if root then
-                    local dist = (root.Position - targetPos).Magnitude
-                    if dist < closestDist then 
-                        closestDist = dist
-                        closest = obj 
+    
+    for _, radius in ipairs({10, 15, 20}) do
+        local closest, closestDist = nil, radius
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("Model") and obj ~= LocalPlayer.Character then
+                if not excludeInstances[obj] then
+                    local root = getRootFromModel(obj)
+                    if root then
+                        local dist = (root.Position - targetPos).Magnitude
+                        if dist < closestDist then 
+                            closestDist = dist
+                            closest = obj 
+                        end
+                    end
+                end
+            end
+        end
+        if closest then return closest end
+    end
+    return nil
+end
+
+-- ID & ADAPTIVE-BASED MATCHING: Pencarian menara berdasarkan ID unik atau posisi adaptif
+local function findTowerForAction(targetIdx, fallbackPos, sessionTowers, sessionTowerIDs)
+    local model = sessionTowers[targetIdx]
+    if model and model.Parent then return model end
+
+    local targetIDs = sessionTowerIDs[targetIdx] or (recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs)
+    if targetIDs and #targetIDs > 0 then
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("Model") and obj ~= LocalPlayer.Character then
+                local alreadyAssignedToOther = false
+                for idx, assignedModel in pairs(sessionTowers) do
+                    if idx ~= targetIdx and assignedModel == obj then
+                        alreadyAssignedToOther = true
+                        break
+                    end
+                end
+                
+                if not alreadyAssignedToOther then
+                    local objIDs = extractAllIDsFromModel(obj)
+                    for _, id in ipairs(targetIDs) do
+                        if #id > 2 then
+                            for _, oid in ipairs(objIDs) do
+                                if oid == id then
+                                    sessionTowers[targetIdx] = obj
+                                    sessionTowerIDs[targetIdx] = objIDs
+                                    return obj
+                                end
+                            end
+                        end
                     end
                 end
             end
         end
     end
-    return closest
+
+    if fallbackPos then
+        local excludeInstances = {}
+        for idx, t in pairs(sessionTowers) do
+            if idx ~= targetIdx and t then excludeInstances[t] = true end
+        end
+        local found = findTowerNearPositionAdaptive(fallbackPos, excludeInstances)
+        if found then
+            sessionTowers[targetIdx] = found
+            sessionTowerIDs[targetIdx] = extractAllIDsFromModel(found)
+            return found
+        end
+    end
+
+    return nil
 end
 
 local function resolveTargetIndex(args, targetModel, actionPos)
@@ -841,7 +897,7 @@ if not getgenv().MacroHookedTD then
                             repeat
                                 task.wait(0.1)
                                 checkTimer = checkTimer + 0.1
-                                newlySpawnedModel = findTowerNearPosition(cf)
+                                newlySpawnedModel = findTowerNearPositionAdaptive(cf)
                             until newlySpawnedModel or checkTimer >= 1.0
                             
                             local cashAfter = getPlayerCash()
@@ -1034,7 +1090,7 @@ function startPlayback()
                         if not newlySpawnedModel and action.PositionCF then
                             local excludeInstances = {}
                             for _, t in pairs(sessionTowers) do excludeInstances[t] = true end
-                            newlySpawnedModel = findTowerNearPosition(action.PositionCF, excludeInstances)
+                            newlySpawnedModel = findTowerNearPositionAdaptive(action.PositionCF, excludeInstances)
                         end
                         
                         if not newlySpawnedModel then
@@ -1060,22 +1116,8 @@ function startPlayback()
                         end
                         if not isPlaying then return end
 
-                        local currentModel = sessionTowers[targetIdx]
-                        if not currentModel or not currentModel.Parent then
-                            local excludeInstances = {}
-                            for _, t in pairs(sessionTowers) do if t ~= currentModel then excludeInstances[t] = true end end
-                            
-                            if recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
-                                currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF, excludeInstances)
-                            elseif action.PositionCF then
-                                currentModel = findTowerNearPosition(action.PositionCF, excludeInstances)
-                            else
-                                local cfFromArgs = getCFrameFromArgs(realArgs)
-                                if cfFromArgs then
-                                    currentModel = findTowerNearPosition(cfFromArgs, excludeInstances)
-                                end
-                            end
-                        end
+                        local fallbackPos = (recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF) or action.PositionCF or getCFrameFromArgs(realArgs)
+                        local currentModel = findTowerForAction(targetIdx, fallbackPos, sessionTowers, sessionTowerIDs)
                         
                         if currentModel then
                             local cashBefore = getPlayerCash()
@@ -1100,12 +1142,8 @@ function startPlayback()
                                     successAction = true
                                     if costChange > 0 then action.CashCost = costChange end
                                     
-                                    -- DYNAMIC REFRESH: Perbarui referensi model karena game memperbarui model saat upgrade
                                     task.wait(0.1)
-                                    local excludeInstances = {}
-                                    for idx, t in pairs(sessionTowers) do if idx ~= targetIdx then excludeInstances[t] = true end end
-                                    local targetPos = (recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF) or currentModel:GetPivot()
-                                    local refreshedModel = findTowerNearPosition(targetPos, excludeInstances)
+                                    local refreshedModel = findTowerForAction(targetIdx, fallbackPos, sessionTowers, sessionTowerIDs)
                                     if refreshedModel then
                                         sessionTowers[targetIdx] = refreshedModel
                                         sessionTowerIDs[targetIdx] = extractAllIDsFromModel(refreshedModel)
