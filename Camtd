@@ -1,4 +1,4 @@
--- Macro TD v34.33 - UI Fix & Adaptive Cluster
+-- Macro TD v34.34 - Auto Replay Detector (Wave 1 & Play Again)
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -57,7 +57,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.33 (UI Fix)"
+title.Text = "Macro TD v34.34 (Auto Replay)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -183,17 +183,27 @@ speed20Btn.TextSize = 11
 speed20Btn.Parent = contentFrame
 
 local autoPlayBtn = Instance.new("TextButton")
-autoPlayBtn.Size = UDim2.new(0, 330, 0, 28)
+autoPlayBtn.Size = UDim2.new(0, 160, 0, 28)
 autoPlayBtn.Position = UDim2.new(0, 15, 0, 150)
 autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
 autoPlayBtn.Text = "Auto Play Rejoin: OFF"
 autoPlayBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 autoPlayBtn.Font = Enum.Font.SourceSansBold
-autoPlayBtn.TextSize = 11
+autoPlayBtn.TextSize = 10
 autoPlayBtn.Parent = contentFrame
 
+local autoReplayBtn = Instance.new("TextButton")
+autoReplayBtn.Size = UDim2.new(0, 160, 0, 28)
+autoReplayBtn.Position = UDim2.new(0, 185, 0, 150)
+autoReplayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+autoReplayBtn.Text = "Auto Replay: OFF"
+autoReplayBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+autoReplayBtn.Font = Enum.Font.SourceSansBold
+autoReplayBtn.TextSize = 11
+autoReplayBtn.Parent = contentFrame
+
 local logFrame = Instance.new("ScrollingFrame")
-logFrame.Size = UDim2.new(0, 330, 0, 225)
+logFrame.Size = UDim2.new(0, 330, 0, 195)
 logFrame.Position = UDim2.new(0, 15, 0, 185)
 logFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
 logFrame.BorderSizePixel = 0
@@ -231,7 +241,7 @@ minimizeBtn.MouseButton1Click:Connect(function()
         minimizeBtn.Text = "+"
     else
         contentFrame.Visible = true
-        mainFrame.Size = UDim2.new(0, 360, 0, 430)
+        mainFrame.Size = UDim2.new(0, 360, 0, 410)
         minimizeBtn.Text = "-"
     end
 end)
@@ -240,6 +250,7 @@ end)
 local isRecording = false
 local isPlaying = false
 local autoPlayOnRejoin = false
+local autoReplayActive = false
 local autoElevator = false
 local selectedElevator = "Elevator2"
 local speed15Active = false
@@ -322,6 +333,7 @@ function saveConfig()
     if not writefile then return end
     local cfg = {
         autoPlay = autoPlayOnRejoin,
+        autoReplay = autoReplayActive,
         autoElevator = autoElevator,
         selectedElevator = selectedElevator,
         elevatorIndex = currentElevatorIndex,
@@ -340,6 +352,7 @@ function loadConfig()
         local data = HttpService:JSONDecode(readfile(FOLDER_NAME .. "/config.json"))
         if data then
             autoPlayOnRejoin = data.autoPlay or false
+            autoReplayActive = data.autoReplay or false
             autoElevator = data.autoElevator or false
             selectedElevator = data.selectedElevator or "Elevator2"
             currentElevatorIndex = data.elevatorIndex or 1
@@ -351,6 +364,9 @@ function loadConfig()
             autoPlayBtn.Text = autoPlayOnRejoin and "Auto Play Rejoin: ON" or "Auto Play Rejoin: OFF"
             autoPlayBtn.BackgroundColor3 = autoPlayOnRejoin and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
             
+            autoReplayBtn.Text = autoReplayActive and "Auto Replay: ON" or "Auto Replay: OFF"
+            autoReplayBtn.BackgroundColor3 = autoReplayActive and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
+            
             autoElevatorBtn.Text = autoElevator and "Auto Elevator: ON" or "Auto Elevator: OFF"
             autoElevatorBtn.BackgroundColor3 = autoElevator and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
             
@@ -358,12 +374,10 @@ function loadConfig()
                 speed15Btn.Text = "Speed 1.5x: ON"
                 speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
                 setGameSpeed(1.5)
-                logConsole("Loaded Speed: x1.5 (Active)")
             elseif speed20Active then
                 speed20Btn.Text = "Speed 2x: ON"
                 speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
                 setGameSpeed(2)
-                logConsole("Loaded Speed: x2 (Active)")
             end
             
             elevatorSelectBtn.Text = "Map: " .. elevatorOptions[currentElevatorIndex].Name
@@ -377,16 +391,13 @@ speed15Btn.MouseButton1Click:Connect(function()
         speed20Active = false
         speed20Btn.Text = "Speed 2x: OFF"
         speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        
         speed15Btn.Text = "Speed 1.5x: ON"
         speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
         setGameSpeed(1.5)
-        logConsole("Speed Game diubah ke x1.5")
     else
         speed15Btn.Text = "Speed 1.5x: OFF"
         speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
         setGameSpeed(1)
-        logConsole("Speed Game dikembalikan ke x1")
     end
     saveConfig()
 end)
@@ -397,39 +408,30 @@ speed20Btn.MouseButton1Click:Connect(function()
         speed15Active = false
         speed15Btn.Text = "Speed 1.5x: OFF"
         speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        
         speed20Btn.Text = "Speed 2x: ON"
         speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
         setGameSpeed(2)
-        logConsole("Speed Game diubah ke x2")
     else
         speed20Btn.Text = "Speed 2x: OFF"
         speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
         setGameSpeed(1)
-        logConsole("Speed Game dikembalikan ke x1")
     end
     saveConfig()
 end)
 
-local function teleportToElevator(elevatorCode)
-    local char = LocalPlayer.Character
-    if not char then return end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-
-    local targetElevator = nil
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model") and obj.Name == elevatorCode then
-            targetElevator = obj
-            break
-        end
+autoReplayBtn.MouseButton1Click:Connect(function()
+    autoReplayActive = not autoReplayActive
+    if autoReplayActive then
+        autoReplayBtn.Text = "Auto Replay: ON"
+        autoReplayBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
+        logConsole("Fitur Auto Replay Diaktifkan.")
+    else
+        autoReplayBtn.Text = "Auto Replay: OFF"
+        autoReplayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
+        logConsole("Fitur Auto Replay Dinonaktifkan.")
     end
-
-    if targetElevator then
-        local cf = targetElevator:GetPivot()
-        root.CFrame = cf + Vector3.new(0, 3, 0)
-    end
-end
+    saveConfig()
+end)
 
 local function serializeVal(v)
     if typeof(v) == "CFrame" then
@@ -476,46 +478,6 @@ elevatorSelectBtn.MouseButton1Click:Connect(function()
     local current = elevatorOptions[currentElevatorIndex]
     selectedElevator = current.Code
     elevatorSelectBtn.Text = "Map: " .. current.Name
-    saveConfig()
-end)
-
-task.spawn(function()
-    while true do
-        task.wait(2)
-        if autoElevator then
-            pcall(function()
-                teleportToElevator(selectedElevator)
-                local Remote = ReplicatedStorage:FindFirstChild("ModuleLoader")
-                if Remote then
-                    Remote.Shared.Network.RemoteFunction.ElevatorEnter:InvokeServer(selectedElevator)
-                end
-            end)
-        end
-    end
-end)
-
-autoElevatorBtn.MouseButton1Click:Connect(function()
-    autoElevator = not autoElevator
-    if autoElevator then
-        autoElevatorBtn.Text = "Auto Elevator: ON"
-        autoElevatorBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        teleportToElevator(selectedElevator)
-    else
-        autoElevatorBtn.Text = "Auto Elevator: OFF"
-        autoElevatorBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-    end
-    saveConfig()
-end)
-
-autoPlayBtn.MouseButton1Click:Connect(function()
-    autoPlayOnRejoin = not autoPlayOnRejoin
-    if autoPlayOnRejoin then
-        autoPlayBtn.Text = "Auto Play Rejoin: ON"
-        autoPlayBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-    else
-        autoPlayBtn.Text = "Auto Play Rejoin: OFF"
-        autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-    end
     saveConfig()
 end)
 
@@ -596,7 +558,7 @@ function loadMacroFromFile(mName)
     end)
     
     if success then
-        logConsole("Berhasil Load (Kompatibel): " .. mName .. " (" .. #recordedData .. " aksi)")
+        logConsole("Berhasil Load: " .. mName .. " (" .. #recordedData .. " aksi)")
         return true
     else
         logConsole("Gagal membaca file makro!")
@@ -615,8 +577,6 @@ local function deleteMacroFile(mName)
             delfile(fileName)
             logConsole("Berhasil Hapus File: " .. mName)
         end)
-    else
-        logConsole("File " .. mName .. " tidak ditemukan atau fungsi delfile tidak disupport!")
     end
 end
 
@@ -1186,6 +1146,40 @@ playBtn.MouseButton1Click:Connect(function()
         return
     end
     startPlayback()
+end)
+
+-- AUTO REPLAY DETECTOR: Memantau Wave 1 atau Tombol Play Again
+task.spawn(function()
+    local lastTriggerTick = 0
+    while true do
+        task.wait(1)
+        if autoReplayActive and not isPlaying and not isRecording then
+            pcall(function()
+                local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+                if not playerGui then return end
+                
+                for _, gui in ipairs(playerGui:GetDescendants()) do
+                    if (gui:IsA("TextLabel") or gui:IsA("TextButton")) and gui.Visible then
+                        local textLower = gui.Text:lower()
+                        local nameLower = gui.Name:lower()
+                        
+                        -- Deteksi Wave 1 atau Tombol Play Again / Replay
+                        if textLower:find("wave 1") or textLower:find("wave: 1") or nameLower:find("playagain") or nameLower:find("replay") or nameLower:find("retry") or textLower:find("play again") or textLower:find("replay") then
+                            if tick() - lastTriggerTick > 15 then
+                                lastTriggerTick = tick()
+                                logConsole("Auto Replay: Terdeteksi Wave 1 atau Tombol Play Again. Memulai ulang makro...")
+                                task.wait(2)
+                                if loadMacroFromFile(nameBox.Text) then
+                                    startPlayback()
+                                end
+                                break
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+    end
 end)
 
 loadConfig()
