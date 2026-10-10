@@ -1,4 +1,4 @@
--- Macro TD v34.25 - Strict Verification Playback Fix
+-- Macro TD v34.27 - Expanded Radius Only (No Retry Limit)
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -57,7 +57,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.25 (Strict Verify)"
+title.Text = "Macro TD v34.27 (Radius 14)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -688,7 +688,7 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
     if typeof(targetPos) == "CFrame" then targetPos = targetPos.Position end
-    local closest, closestDist = nil, 6
+    local closest, closestDist = nil, 14 -- Radius deteksi diperbesar ke 14 stud
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj ~= LocalPlayer.Character then
             if not excludeInstances[obj] then
@@ -1051,7 +1051,7 @@ function startPlayback()
                     local successAction = false
                     repeat
                         while isPlaying and action.Type == "UPGRADE" and getPlayerCash() < requiredCost do
-                            logConsole(string.format("[%d/%d] Menunggu Cash Upgrade (Butuh: %d)...", index, #recordedData, requiredCost))
+                            logConsole(string.format("[%d/%d] Menunggu Cash Upgrade #%d (Butuh: %d)...", index, #recordedData, targetIdx, requiredCost))
                             task.wait(1)
                         end
                         if not isPlaying then return end
@@ -1082,7 +1082,6 @@ function startPlayback()
                                 remoteObj:FireServer(unpack(playArgs)) 
                             end
                             
-                            -- VERIFIKASI KETAT: Memastikan upgrade/sell benar-benar sukses (cash berubah)
                             local verifyTimer = 0
                             repeat
                                 task.wait(0.1)
@@ -1104,7 +1103,7 @@ function startPlayback()
                                 logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
                                 task.wait(0.35 / currentSpeed)
                             else
-                                logConsole(string.format("[%d/%d] %s Tower #%d Gagal/Belum Respon Server, Mencoba Ulang...", index, #recordedData, action.Type, targetIdx))
+                                logConsole(string.format("[%d/%d] %s Tower #%d Gagal/Belum Respon, Mencoba Ulang...", index, #recordedData, action.Type, targetIdx))
                                 task.wait(0.5 / currentSpeed)
                             end
                         else
