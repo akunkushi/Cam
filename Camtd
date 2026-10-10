@@ -1,4 +1,4 @@
--- Macro TD v34.32 - Adaptive Search Radius & Cluster Fix
+-- Macro TD v34.33 - UI Fix & Adaptive Cluster
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -57,7 +57,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.32 (Adaptive Cluster)"
+title.Text = "Macro TD v34.33 (UI Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -677,14 +677,13 @@ local function extractAllIDsFromModel(inst)
 end
 
 local function getPrimaryID(inst)
-    if not inst or not inst:IsA("Instance") then nil end
+    if not inst or not inst:IsA("Instance") then return nil end
     for k, v in pairs(inst:GetAttributes()) do
         if k:lower():find("id") or k:lower():find("uuid") then return tostring(v) end
     end
     return inst.Name
 end
 
--- ADAPTIVE RADIUS: Pencarian posisi tower dengan ekspansi radius bertahap (10 -> 15 -> 20 stud)
 local function findTowerNearPositionAdaptive(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
@@ -711,7 +710,6 @@ local function findTowerNearPositionAdaptive(targetPos, excludeInstances)
     return nil
 end
 
--- ID & ADAPTIVE-BASED MATCHING: Pencarian menara berdasarkan ID unik atau posisi adaptif
 local function findTowerForAction(targetIdx, fallbackPos, sessionTowers, sessionTowerIDs)
     local model = sessionTowers[targetIdx]
     if model and model.Parent then return model end
