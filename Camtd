@@ -1,4 +1,4 @@
--- Macro TD v34.28 - Radius 10 Stud
+-- Macro TD v34.29 - Clustered Towers Indexing & Exclusion Fix
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
@@ -57,7 +57,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.28 (Radius 10)"
+title.Text = "Macro TD v34.29 (Cluster Fix)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -688,7 +688,7 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     excludeInstances = excludeInstances or {}
     if not targetPos then return nil end
     if typeof(targetPos) == "CFrame" then targetPos = targetPos.Position end
-    local closest, closestDist = nil, 10 -- Radius deteksi diset ke 10 stud
+    local closest, closestDist = nil, 10
     for _, obj in ipairs(Workspace:GetDescendants()) do
         if obj:IsA("Model") and obj ~= LocalPlayer.Character then
             if not excludeInstances[obj] then
@@ -1014,12 +1014,17 @@ function startPlayback()
                             task.wait(0.3 / currentSpeed)
                         end
                         
+                        -- Pengecualian model agar tidak mengambil tower yang sudah terdaftar
                         local timer = 0
                         repeat
                             task.wait(0.1)
                             timer = timer + 0.1
                             for _, v in ipairs(Workspace:GetDescendants()) do
-                                if v:IsA("Model") and not beforeSnapshot[v] and v ~= LocalPlayer.Character then
+                                local alreadyAssigned = false
+                                for _, existingModel in pairs(sessionTowers) do
+                                    if existingModel == v then alreadyAssigned = true; break end
+                                end
+                                if v:IsA("Model") and not beforeSnapshot[v] and not alreadyAssigned and v ~= LocalPlayer.Character then
                                     if getRootFromModel(v) then
                                         newlySpawnedModel = v; break
                                     end
@@ -1058,14 +1063,17 @@ function startPlayback()
 
                         local currentModel = sessionTowers[targetIdx]
                         if not currentModel or not currentModel.Parent then
+                            local excludeInstances = {}
+                            for _, t in pairs(sessionTowers) do if t ~= currentModel then excludeInstances[t] = true end end
+                            
                             if recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF then
-                                currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF)
+                                currentModel = findTowerNearPosition(recordedTowers[targetIdx].PositionCF, excludeInstances)
                             elseif action.PositionCF then
-                                currentModel = findTowerNearPosition(action.PositionCF)
+                                currentModel = findTowerNearPosition(action.PositionCF, excludeInstances)
                             else
                                 local cfFromArgs = getCFrameFromArgs(realArgs)
                                 if cfFromArgs then
-                                    currentModel = findTowerNearPosition(cfFromArgs)
+                                    currentModel = findTowerNearPosition(cfFromArgs, excludeInstances)
                                 end
                             end
                         end
