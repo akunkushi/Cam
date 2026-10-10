@@ -1,10 +1,12 @@
--- Macro TD v34.18 - Speed Scaling & Match ID Adapt
+-- Macro TD v34.23 - Fix Playback Argument & Match ID
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local Camera = Workspace.CurrentCamera
 
 local LocalPlayer = Players.LocalPlayer
 while not LocalPlayer do
@@ -55,7 +57,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -40, 0, 35)
 title.Position = UDim2.new(0, 10, 0, 0)
 title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.18 (Speed Scaling)"
+title.Text = "Macro TD v34.23 (Fix Playback Arg)"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.TextSize = 12
 title.Font = Enum.Font.SourceSansBold
@@ -245,8 +247,28 @@ local speed20Active = false
 
 local recordedData = {}
 local recordedTowers = {}
+local instanceToTowerIndex = {}
 local towerCounter = 0
 local recordStartTime = 0
+
+local lastClickedTower = nil
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if isRecording and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+        local mousePos = UserInputService:GetMouseLocation()
+        local unitRay = Camera:ViewportPointToRay(mousePos.X, mousePos.Y)
+        local raycastParams = RaycastParams.new()
+        raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+        raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
+        local result = Workspace:Raycast(unitRay.Origin, unitRay.Direction * 500, raycastParams)
+        if result and result.Instance then
+            local model = result.Instance:FindFirstAncestorOfClass("Model")
+            if model and model ~= LocalPlayer.Character then
+                lastClickedTower = model
+            end
+        end
+    end
+end)
 
 local elevatorOptions = {
     {Name = "Toilet City", Code = "Elevator2"},
@@ -665,6 +687,62 @@ local function findTowerNearPosition(targetPos, excludeInstances)
     return closest
 end
 
+local function resolveTargetIndex(args, targetModel, actionPos)
+    if targetModel and instanceToTowerIndex[targetModel] then
+        return instanceToTowerIndex[targetModel]
+    end
+
+    local function searchIDInTable(tbl)
+        for _, v in pairs(tbl) do
+            local vStr = tostring(v)
+            for idx, tInfo in pairs(recordedTowers) do
+                if tInfo.IDs then
+                    for _, id in ipairs(tInfo.IDs) do
+                        if tostring(id) == vStr and #vStr > 2 then
+                            return idx
+                        end
+                    end
+                end
+            end
+            if type(v) == "table" then
+                local found = searchIDInTable(v)
+                if found then return found end
+            end
+        end
+        return nil
+    end
+    
+    local matchedById = searchIDInTable(args)
+    if matchedById then return matchedById end
+    
+    local targetRoot = targetModel and getRootFromModel(targetModel)
+    local targetPos = targetRoot and targetRoot.Position or (targetModel and targetModel.PrimaryPart and targetModel.PrimaryPart.Position)
+    if not targetPos and actionPos then
+        targetPos = (typeof(actionPos) == "CFrame") and actionPos.Position or actionPos
+    end
+    if not targetPos then
+        local cf = getCFrameFromArgs(args)
+        if cf then targetPos = cf.Position end
+    end
+    
+    if targetPos then
+        local minDist = 999999
+        local bestIdx = 1
+        for idx, tInfo in pairs(recordedTowers) do
+            if tInfo.PositionCF then
+                local dist = (tInfo.PositionCF.Position - targetPos).Magnitude
+                if dist < minDist then
+                    minDist = dist
+                    bestIdx = idx
+                end
+            end
+        end
+        return bestIdx
+    end
+    
+    return 1
+end
+
 local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel, newMatchIDs)
     if not newModel then return oldArgs end
     local newPrimaryID = getPrimaryID(newModel)
@@ -704,12 +782,9 @@ local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel, newMat
                             end
                         end
                     end
+                    -- HAPUS BLANKET REPLACEMENT AGAR ARGUMEN PERINTAH TIDAK RUSAK
                     if not replaced then
-                        if (strVal:find("-") or #strVal >= 5 or strVal:find("Tower")) and newPrimaryID then
-                            res[k] = newPrimaryID
-                        else
-                            res[k] = v
-                        end
+                        res[k] = v
                     end
                 end
             elseif type(v) == "table" then
@@ -743,10 +818,16 @@ if not getgenv().MacroHookedTD then
                             local currentIdx = towerCounter
                             local cf = getCFrameFromArgs(args)
                             
-                            task.wait(0.4)
+                            local newlySpawnedModel = nil
+                            local checkTimer = 0
+                            repeat
+                                task.wait(0.1)
+                                checkTimer = checkTimer + 0.1
+                                newlySpawnedModel = findTowerNearPosition(cf)
+                            until newlySpawnedModel or checkTimer >= 1.0
+                            
                             local cashAfter = getPlayerCash()
                             local cost = cashBefore - cashAfter
-                            local newlySpawnedModel = findTowerNearPosition(cf)
                             
                             if not cf and newlySpawnedModel then
                                 cf = newlySpawnedModel:GetPivot()
@@ -758,6 +839,10 @@ if not getgenv().MacroHookedTD then
                                 IDs = newlySpawnedModel and extractAllIDsFromModel(newlySpawnedModel) or {},
                                 Model = newlySpawnedModel
                             }
+                            
+                            if newlySpawnedModel then
+                                instanceToTowerIndex[newlySpawnedModel] = currentIdx
+                            end
                             
                             local actionEntry = {
                                 Type = "ADD", Time = timeStamp, Remote = self, Method = method,
@@ -773,42 +858,50 @@ if not getgenv().MacroHookedTD then
                             else
                                 table.remove(recordedData, entryIndex)
                                 recordedTowers[currentIdx] = nil
+                                if newlySpawnedModel then instanceToTowerIndex[newlySpawnedModel] = nil end
                                 towerCounter = towerCounter - 1
                                 logConsole("[Rec] TowerAdd Gagal/Dibatalkan (Dihapus dari rekaman)")
                             end
                             
                         elseif rName == "TowerUpgrade" or rName == "TowerSell" then
-                            local targetModel = getTowerFromArgs(args)
-                            local targetIdx = resolveTargetIndex(args, targetModel, nil)
+                            local targetModel = getTowerFromArgs(args) or lastClickedTower
+                            local actionPos = targetModel and targetModel:GetPivot() or getCFrameFromArgs(args)
+                            local targetIdx = resolveTargetIndex(args, targetModel, actionPos)
                             local actionType = (rName == "TowerUpgrade" and "UPGRADE" or "SELL")
-                            local targetIDs = recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs or nil
+                            local targetIDs = recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs or {}
                             
                             local actionEntry = {
                                 Type = actionType, Time = timeStamp, Remote = self, Method = method,
                                 Args = serializeVal(args), TargetIndex = targetIdx, CashCost = 150,
-                                TowerIDs = targetIDs, PositionCF = targetModel and targetModel:GetPivot() or nil
+                                TowerIDs = targetIDs, PositionCF = actionPos
                             }
                             table.insert(recordedData, actionEntry)
                             local entryIndex = #recordedData
                             
-                            task.wait(0.4)
-                            local cashAfter = getPlayerCash()
-                            local cost = cashBefore - cashAfter
-                            
                             local isSuccess = false
-                            if rName == "TowerUpgrade" and cost > 0 and cost < 100000 then
-                                isSuccess = true
-                                actionEntry.CashCost = cost
-                            elseif rName == "TowerSell" and cost < 0 then
-                                isSuccess = true
-                                actionEntry.CashCost = math.abs(cost)
-                            end
+                            local checkTimer = 0
+                            repeat
+                                task.wait(0.1)
+                                checkTimer = checkTimer + 0.1
+                                local cashAfter = getPlayerCash()
+                                local cost = cashBefore - cashAfter
+                                
+                                if rName == "TowerUpgrade" and cost > 0 and cost < 100000 then
+                                    isSuccess = true
+                                    actionEntry.CashCost = cost
+                                    break
+                                elseif rName == "TowerSell" and cost < 0 then
+                                    isSuccess = true
+                                    actionEntry.CashCost = math.abs(cost)
+                                    break
+                                end
+                            until checkTimer >= 1.0
                             
                             if isSuccess then
-                                logConsole(string.format("[Rec] %s -> Tower #%d Sukses", rName, targetIdx))
+                                logConsole(string.format("[Rec] %s -> Tower #%d Sukses", actionType, targetIdx))
                             else
                                 table.remove(recordedData, entryIndex)
-                                logConsole(string.format("[Rec] %s Gagal/Dibatalkan (Dihapus dari rekaman)", rName))
+                                logConsole(string.format("[Rec] %s Gagal/Dibatalkan (Dihapus dari rekaman)", actionType))
                             end
                         end
                     end)
@@ -825,6 +918,8 @@ recordBtn.MouseButton1Click:Connect(function()
     if isRecording then
         recordedData = {}
         recordedTowers = {}
+        instanceToTowerIndex = {}
+        lastClickedTower = nil
         towerCounter = 0
         recordStartTime = tick()
         recordBtn.Text = "Record: ON"
@@ -847,7 +942,6 @@ function startPlayback()
     playBtn.Text = "Playing..."
     playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
     
-    -- Tentukan multiplier kecepatan game saat playback
     local currentSpeed = 1
     if speed15Active then 
         currentSpeed = 1.5
@@ -859,7 +953,7 @@ function startPlayback()
         setGameSpeed(1)
     end
     
-    logConsole(string.format("PLAYBACK STARTED (Speed: %.1fx, Anti-Double & Match ID Active)...", currentSpeed))
+    logConsole(string.format("PLAYBACK STARTED (Speed: %.1fx)...", currentSpeed))
     
     task.spawn(function()
         local playbackStart = tick()
@@ -869,7 +963,6 @@ function startPlayback()
         for index, action in ipairs(recordedData) do
             if not isPlaying then break end
             
-            -- Waktu tunggu disesuaikan dengan kecepatan game (dibagi currentSpeed)
             local targetTime = action.Time / currentSpeed
             local waitTime = targetTime - (tick() - playbackStart)
             if waitTime > 0 then task.wait(waitTime) end
@@ -886,7 +979,7 @@ function startPlayback()
                     
                     repeat
                         while isPlaying and getPlayerCash() < requiredCost do
-                            logConsole(string.format("[%d/%d] Menunggu Cash Place (Butuh: %d | Cash: %d)...", index, #recordedData, requiredCost, getPlayerCash()))
+                            logConsole(string.format("[%d/%d] Menunggu Cash Place (Butuh: %d)...", index, #recordedData, requiredCost))
                             task.wait(1)
                         end
                         if not isPlaying then return end
@@ -923,7 +1016,6 @@ function startPlayback()
                         end
                         
                         if not newlySpawnedModel then
-                            logConsole(string.format("[%d/%d] PLACE Tower #%d Menunggu Model...", index, #recordedData, action.TowerIndex or action.TargetIndex))
                             task.wait(0.5 / currentSpeed)
                         end
                     until newlySpawnedModel or not isPlaying
@@ -940,8 +1032,8 @@ function startPlayback()
                     
                     local successAction = false
                     repeat
-                        while isPlaying and getPlayerCash() < requiredCost do
-                            logConsole(string.format("[%d/%d] Menunggu Cash %s (Butuh: %d | Cash: %d)...", index, #recordedData, action.Type, requiredCost, getPlayerCash()))
+                        while isPlaying and action.Type == "UPGRADE" and getPlayerCash() < requiredCost do
+                            logConsole(string.format("[%d/%d] Menunggu Cash Upgrade (Butuh: %d)...", index, #recordedData, requiredCost))
                             task.wait(1)
                         end
                         if not isPlaying then return end
@@ -962,27 +1054,15 @@ function startPlayback()
                         
                         if currentModel then
                             task.wait(0.15 / currentSpeed)
-                            local cashBeforePlay = getPlayerCash()
-                            
                             local currentMatchIDs = sessionTowerIDs[targetIdx] or extractAllIDsFromModel(currentModel)
                             local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel, currentMatchIDs)
                             
                             if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(playArgs))
                             else remoteObj:FireServer(unpack(playArgs)) end
                             
+                            successAction = true
+                            logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
                             task.wait(0.35 / currentSpeed)
-                            local cashAfterPlay = getPlayerCash()
-                            
-                            if action.Type == "UPGRADE" and cashBeforePlay > cashAfterPlay then
-                                successAction = true
-                                logConsole(string.format("[%d/%d] UPGRADE Tower #%d DONE", index, #recordedData, targetIdx))
-                            elseif action.Type == "SELL" and cashBeforePlay < cashAfterPlay then
-                                successAction = true
-                                logConsole(string.format("[%d/%d] SELL Tower #%d DONE", index, #recordedData, targetIdx))
-                            else
-                                logConsole(string.format("[%d/%d] %s Tower #%d Ditolak Server, Mencoba Lagi...", index, #recordedData, action.Type, targetIdx))
-                                task.wait(0.5 / currentSpeed)
-                            end
                         else
                             logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
                             task.wait(1 / currentSpeed)
