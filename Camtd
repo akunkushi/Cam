@@ -1,7 +1,7 @@
 --[[
-  Tower Macro v3.1 - Delta Mobile
+  Tower Macro v3.3 - Delta Mobile
   Record/Play (place, upgrade, sell) + Save Slot + Auto Speed + Auto Start
-  + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay + Auto Pickup
+  + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay + Auto Pickup (Drop/Taken)
 ]]
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -21,8 +21,6 @@ local CFG = {
 	SET_FILE = "TowerMacro_settings.json",
 	CASH_NAMES = { "cash", "money", "coins", "gold" },
 	TOWER_FOLDERS = { "Towers", "Tower", "PlacedTowers" },
-	DROP_FOLDERS = { "Drops", "Items", "ItemDrops", "Pickups", "Loot" },
-	DROP_HINTS = { "drop", "item", "pickup", "loot", "reward" },
 	VERIFY_TIMEOUT = 1.5,
 	RETRY_DELAY = 0.4,
 	PROBE_AFTER = 6,
@@ -39,6 +37,14 @@ local CFG = {
 	RESULT_EVENT_HINTS = { "result", "victory", "defeat", "gameover", "gameend", "matchend", "endmatch" },
 }
 
+-- pengaturan pickup (boleh diubah)
+local PK = {
+	DELAY = 0.8,   -- jeda setelah item muncul sebelum diambil
+	RETRY = 1.2,   -- jarak antar percobaan
+	MAX_AGE = 90,  -- detik, lewat ini item dianggap gagal
+	MAX_TRY = 40,
+}
+
 local DIFFS = { "Easy", "Medium", "Hard", "Nightmare" }
 
 local TRACK = { RequestPlacement = "place", RequestTowerUpgrade = "upgrade", RequestTowerSell = "sell" }
@@ -49,7 +55,7 @@ local mode = "idle"
 local macro = {}
 local slots = {}
 local S = {
-	speed = 0, autoStart = false, autoPickup = false, learned = nil,
+	speed = 0, autoStart = false, autoPickup = false,
 	autoPlay = false, playSlot = nil,
 	autoVote = false, difficulty = "Easy",
 	autoReplay = false,
@@ -255,7 +261,7 @@ end
 ------------------------------------------------------------------ RECORD
 local seqCounter, nextFlush, pending = 0, 1, {}
 local knownIds, nameById, liveById = {}, {}, {}
-local queue, msgq = {}, {}
+local queue = {}
 
 local function flush()
 	while pending[nextFlush] ~= nil do
@@ -365,51 +371,9 @@ local function handleRecorded(kind, seq, args, ret, cashBefore, countBefore, sna
 	flush()
 end
 
------------------------------------------------------------------- PICKUP LEARN
-local learnTries = 0
-local function learnPickup(id)
-	if S.learned or learnTries >= 5 then return end
-	learnTries += 1
-	local found, kind
-	for _, d in ipairs(workspace:GetDescendants()) do
-		if d.Name == id then found, kind = d, { t = "name" } break end
-	end
-	if not found then
-		for _, d in ipairs(workspace:GetDescendants()) do
-			if d:IsA("Model") or d:IsA("BasePart") or d:IsA("Folder") then
-				for n, v in pairs(d:GetAttributes()) do
-					if v == id then found, kind = d, { t = "attr", n = n } break end
-				end
-				if not found then
-					for _, c in ipairs(d:GetChildren()) do
-						if c:IsA("StringValue") and c.Value == id then found, kind = d, { t = "child", n = c.Name } break end
-					end
-				end
-				if found then break end
-			end
-		end
-	end
-	if found then
-		S.learned = { parent = found.Parent and found.Parent.Name or "Workspace", kind = kind }
-		saveSettings()
-		table.insert(msgq, "BELAJAR pickup: ID ada di " .. found:GetFullName() .. " (" .. kind.t .. ")")
-	else
-		table.insert(msgq, "Pickup manual: instance item tidak ketemu di workspace (coba lagi)")
-	end
-end
-
+-- Handler jalan di thread game: HANYA ambil data & masukkan ke antrean
 G.TMacro_Handler2 = function(self, method, call, ...)
-	if not alive then return call(...) end
-
-	if method == "FireServer" then
-		if self.Name == "ItemDrop" and not S.learned then
-			local a1, a2 = ...
-			if a1 == "Pickup" and type(a2) == "string" then pcall(learnPickup, a2) end
-		end
-		return call(...)
-	end
-
-	if mode ~= "record" then return call(...) end
+	if not alive or mode ~= "record" then return call(...) end
 	local kind = TRACK[self.Name]
 	if not kind then return call(...) end
 	local args = table.pack(...)
@@ -426,8 +390,6 @@ end
 
 task.spawn(function()
 	while alive do
-		local m = table.remove(msgq, 1)
-		if m then log(m) end
 		local it = table.remove(queue, 1)
 		if it then
 			task.spawn(function()
@@ -438,7 +400,7 @@ task.spawn(function()
 					pcall(flush)
 				end
 			end)
-		elseif not m then
+		else
 			task.wait(0.05)
 		end
 	end
@@ -453,8 +415,7 @@ local function installHook()
 	local old
 	old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
 		local method = getnamecallmethod()
-		if (method == "InvokeServer" or method == "FireServer")
-			and typeof(self) == "Instance" and not checkcaller() then
+		if method == "InvokeServer" and typeof(self) == "Instance" and not checkcaller() then
 			local h = G.TMacro_Handler2
 			if h then
 				local s, m = self, method
@@ -708,7 +669,7 @@ task.spawn(function()
 		if S.autoStart then
 			pcall(function()
 				local w = getWave()
-				if S.autoVote and voteTries == 0 then return end -- tunggu vote dulu
+				if S.autoVote and voteTries == 0 then return end
 				if S.autoVote and voteTries < 99 and os.clock() - lastVote < 3 then return end
 				local gap = (w == nil) and 30 or 6
 				if (w == nil or w == 0) and os.clock() - lastReady > gap then
@@ -789,107 +750,71 @@ task.spawn(function()
 	end
 end)
 
------------------------------------------------------------------- AUTO PICKUP
-local tracked, pickupConn, pickupCount = {}, nil, 0
+------------------------------------------------------------------ AUTO PICKUP (event ItemDrop: "Drop" -> "Taken")
+local openDrops = {}              -- id -> {name, born, last, n}
+local pickStat = { ok = 0, fail = 0 }
+local itemConns, itemConnected = {}, {}
+local pickLabel
 
-local function hinted(inst)
-	local p = inst.Parent
-	while p and p ~= workspace and p ~= game do
-		local n = p.Name:lower()
-		for _, h in ipairs(CFG.DROP_HINTS) do
-			if n:find(h, 1, true) then return true end
+local function onItemEvent(tag, id, name)
+	if not alive or type(id) ~= "string" then return end
+	if tag == "Drop" then
+		if not openDrops[id] then
+			openDrops[id] = { name = tostring(name), born = os.clock(), last = 0, n = 0 }
 		end
-		p = p.Parent
-	end
-	return false
-end
-
-local function pickupId(inst)
-	local tf = getFolder()
-	if tf and inst:IsDescendantOf(tf) then return nil end
-	if S.learned and S.learned.parent then
-		if not inst.Parent or inst.Parent.Name ~= S.learned.parent then return nil end
-		local v = readKey(inst, S.learned.kind)
-		return type(v) == "string" and v or nil
-	end
-	if not hinted(inst) then return nil end
-	for _, k in ipairs(keysOf(inst)) do
-		if isGuid(k.key) then return k.key end
+	elseif tag == "Taken" then
+		local t = openDrops[id]
+		if t then
+			openDrops[id] = nil
+			if t.n > 0 then
+				pickStat.ok += 1
+				log(("PICKUP OK: %s (%d percobaan)"):format(t.name, t.n))
+			end
+		end
 	end
 end
 
-local function firePickup(t)
-	local ev = eventByName("ItemDrop")
-	if not ev then return end
-	pcall(function() ev:FireServer("Pickup", t.id) end)
-	t.n += 1
-	t.last = os.clock()
-	if t.n == 1 then
-		pickupCount += 1
-		log(("AUTO PICKUP #%d id=%s"):format(pickupCount, t.id:sub(1, 8)))
-	end
-end
-
-local function trackPickup(inst)
-	if tracked[inst] then return end
-	local id = pickupId(inst)
-	if not id then return end
-	local t = { id = id, n = 0, last = 0 }
-	tracked[inst] = t
-	firePickup(t)
-end
-
-local function onAdded(inst)
-	if not S.autoPickup then return end
-	local p = inst.Parent
-	if not p then return end
-	if S.learned then
-		if p.Name ~= S.learned.parent then return end
-	elseif not hinted(inst) then
-		return
-	end
-	task.delay(0.2, function()
-		if alive and S.autoPickup and inst.Parent then trackPickup(inst) end
+local function connectItem(ev)
+	if itemConnected[ev] or ev.Name ~= "ItemDrop" or not ev:IsA("RemoteEvent") then return end
+	itemConnected[ev] = true
+	local ok, c = pcall(function()
+		return ev.OnClientEvent:Connect(function(...) pcall(onItemEvent, ...) end)
 	end)
-end
-
-local function scanExisting()
-	if S.learned then
-		local f = workspace:FindFirstChild(S.learned.parent, true)
-		if f then for _, c in ipairs(f:GetChildren()) do trackPickup(c) end end
-	else
-		for _, n in ipairs(CFG.DROP_FOLDERS) do
-			local f = workspace:FindFirstChild(n, true)
-			if f then for _, c in ipairs(f:GetDescendants()) do trackPickup(c) end end
-		end
-	end
-end
-
-local function setPickup(on)
-	S.autoPickup = on
-	if on and not pickupConn then
-		pickupConn = workspace.DescendantAdded:Connect(onAdded)
-		task.spawn(scanExisting)
-		if not S.learned then
-			log("Pickup aktif (mode tebak). Ambil 1 item manual supaya skrip belajar lokasi ID.")
-		end
-	elseif not on and pickupConn then
-		pickupConn:Disconnect()
-		pickupConn = nil
-	end
+	if ok and c then table.insert(itemConns, c) end
 end
 
 task.spawn(function()
 	while alive do
-		task.wait(0.5)
-		if S.autoPickup then
-			for inst, t in pairs(tracked) do
-				if not inst.Parent then
-					tracked[inst] = nil
-				elseif t.n < 4 and os.clock() - t.last > 1.5 then
-					firePickup(t)
+		task.wait(0.25)
+		local now = os.clock()
+		local ids, waiting = {}, 0
+		for id in pairs(openDrops) do ids[#ids + 1] = id end
+		for _, id in ipairs(ids) do
+			local t = openDrops[id]
+			if t then
+				if now - t.born > PK.MAX_AGE or t.n >= PK.MAX_TRY then
+					openDrops[id] = nil
+					if t.n > 0 then
+						pickStat.fail += 1
+						log(("PICKUP GAGAL: %s (%d percobaan)"):format(t.name, t.n))
+					end
+				else
+					waiting += 1
+					if S.autoPickup and now - t.born >= PK.DELAY and now - t.last >= PK.RETRY then
+						local ev = eventByName("ItemDrop")
+						if ev then
+							pcall(function() ev:FireServer("Pickup", id) end)
+							t.n += 1
+							t.last = os.clock()
+							if t.n == 1 then log("AUTO PICKUP: " .. t.name) end
+							task.wait(0.12)
+						end
+					end
 				end
 			end
+		end
+		if pickLabel then
+			pickLabel.Text = ("Pickup: ok %d | gagal %d | menunggu %d"):format(pickStat.ok, pickStat.fail, waiting)
 		end
 	end
 end)
@@ -947,7 +872,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -36, 0, 30)
 title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 title.BorderSizePixel = 0
-title.Text = "  Tower Macro v3.1"
+title.Text = "  Tower Macro v3.3"
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
 title.Font = Enum.Font.GothamBold
@@ -965,7 +890,6 @@ body.Position = UDim2.fromOffset(0, 30)
 body.BackgroundTransparency = 1
 body.Parent = frame
 
--- tabs
 local tabNames = { "Makro", "Auto", "Log" }
 local tabBtns, pages = {}, {}
 for i, n in ipairs(tabNames) do
@@ -1163,6 +1087,10 @@ local t15 = mkToggle()
 local t2 = mkToggle()
 local tStart = mkToggle()
 local tPick = mkToggle()
+pickLabel = mkLabel(pa, "Pickup: ok 0 | gagal 0 | menunggu 0", UDim2.new(), UDim2.new(1, -8, 0, 18), nil, Color3.fromRGB(170, 190, 255))
+pickLabel.Font = Enum.Font.Gotham
+pickLabel.TextSize = 11
+pickLabel.LayoutOrder = nextLO()
 
 local hint = mkLabel(pa, "Pengaturan tersimpan otomatis. Taruh skrip di folder autoexecute Delta agar Auto Play & Auto Replay jalan otomatis setelah rejoin.",
 	UDim2.new(), UDim2.new(1, -8, 0, 56), nil, Color3.fromRGB(150, 150, 165))
@@ -1222,7 +1150,7 @@ tStart.MouseButton1Click:Connect(function()
 	log("Auto Start: " .. (S.autoStart and "ON" or "OFF"))
 end)
 tPick.MouseButton1Click:Connect(function()
-	setPickup(not S.autoPickup)
+	S.autoPickup = not S.autoPickup
 	saveSettings(); refreshToggles()
 	log("Auto Pickup: " .. (S.autoPickup and "ON" or "OFF"))
 end)
@@ -1310,7 +1238,7 @@ G.TMacro_Destroy = function()
 	alive = false
 	mode = "idle"
 	G.TMacro_Handler2 = nil
-	if pickupConn then pickupConn:Disconnect() pickupConn = nil end
+	for _, c in ipairs(itemConns) do pcall(function() c:Disconnect() end) end
 	for _, c in ipairs(resultConns) do pcall(function() c:Disconnect() end) end
 	pcall(function() gui:Destroy() end)
 end
@@ -1360,7 +1288,6 @@ if sv then
 	S.speed = tonumber(sv.speed) or 0
 	S.autoStart = sv.autoStart == true
 	S.autoPickup = sv.autoPickup == true
-	S.learned = sv.learned
 	S.autoPlay = sv.autoPlay == true
 	S.playSlot = type(sv.playSlot) == "string" and sv.playSlot or nil
 	S.autoVote = sv.autoVote == true
@@ -1389,16 +1316,19 @@ local hooked = installHook()
 log("Hook: " .. (hooked and "aktif" or "GAGAL"))
 log(("Makro aktif: %d aksi | Slot tersimpan: %d"):format(#macro, (function() local c = 0 for _ in pairs(slots) do c += 1 end return c end)()))
 
+-- dengarkan event ItemDrop (Drop / Taken)
+task.spawn(function()
+	local r = RS:WaitForChild("Remotes", 30)
+	if not r or not alive then return end
+	for _, d in ipairs(r:GetDescendants()) do connectItem(d) end
+	table.insert(itemConns, r.DescendantAdded:Connect(function(d) connectItem(d) end))
+end)
+
 -- pantau event hasil match (untuk Auto Replay)
 task.spawn(function()
 	local r = RS:WaitForChild("Remotes", 30)
 	local e = r and r:WaitForChild("Events", 30)
 	if e and alive then hookResultEvents(e) end
 end)
-
-local wantPickup = S.autoPickup
-S.autoPickup = false
-if wantPickup then setPickup(true) end
-refreshToggles()
 
 if S.autoPlay then startAutoPlay() end
