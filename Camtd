@@ -1,1202 +1,1404 @@
--- Macro TD v34.33 - UI Fix & Adaptive Cluster
+--[[
+  Tower Macro v3.1 - Delta Mobile
+  Record/Play (place, upgrade, sell) + Save Slot + Auto Speed + Auto Start
+  + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay + Auto Pickup
+]]
+
 if not game:IsLoaded() then game.Loaded:Wait() end
+if getgenv and getgenv().TMacro_Destroy then pcall(getgenv().TMacro_Destroy) end
+local G = getgenv()
 
 local Players = game:GetService("Players")
-local Workspace = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RS = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
-local UserInputService = game:GetService("UserInputService")
-local Camera = Workspace.CurrentCamera
+local UIS = game:GetService("UserInputService")
+local LP = Players.LocalPlayer
+while not LP do task.wait(0.1) LP = Players.LocalPlayer end
 
-local LocalPlayer = Players.LocalPlayer
-while not LocalPlayer do
-    Players.PlayerAdded:Wait()
-    LocalPlayer = Players.LocalPlayer
+local CFG = {
+	CUR_FILE = "TowerMacro_v22.json",
+	SLOT_FILE = "TowerMacro_slots.json",
+	SET_FILE = "TowerMacro_settings.json",
+	CASH_NAMES = { "cash", "money", "coins", "gold" },
+	TOWER_FOLDERS = { "Towers", "Tower", "PlacedTowers" },
+	DROP_FOLDERS = { "Drops", "Items", "ItemDrops", "Pickups", "Loot" },
+	DROP_HINTS = { "drop", "item", "pickup", "loot", "reward" },
+	VERIFY_TIMEOUT = 1.5,
+	RETRY_DELAY = 0.4,
+	PROBE_AFTER = 6,
+	MAX_LOG = 80,
+	MATCH_DIST = 6,
+	AUTOPLAY_DELAY = 3,
+	REPLAY_DELAY = 3,
+	RESULT_TEXTS = {
+		["VICTORY"] = true, ["DEFEAT"] = true, ["GAME OVER"] = true,
+		["YOU WIN"] = true, ["YOU LOSE"] = true,
+		["MISSION COMPLETE"] = true, ["MISSION FAILED"] = true,
+		["REJOIN"] = true, ["REPLAY"] = true, ["PLAY AGAIN"] = true,
+	},
+	RESULT_EVENT_HINTS = { "result", "victory", "defeat", "gameover", "gameend", "matchend", "endmatch" },
+}
+
+local DIFFS = { "Easy", "Medium", "Hard", "Nightmare" }
+
+local TRACK = { RequestPlacement = "place", RequestTowerUpgrade = "upgrade", RequestTowerSell = "sell" }
+local REMOTE_OF = { place = "RequestPlacement", upgrade = "RequestTowerUpgrade", sell = "RequestTowerSell" }
+
+local alive = true
+local mode = "idle"
+local macro = {}
+local slots = {}
+local S = {
+	speed = 0, autoStart = false, autoPickup = false, learned = nil,
+	autoPlay = false, playSlot = nil,
+	autoVote = false, difficulty = "Easy",
+	autoReplay = false,
+}
+
+local function isGuid(s)
+	return type(s) == "string" and s:match("^%x+%-%x+%-%x+%-%x+%-%x+$") ~= nil
+end
+local function fmt(n) return n and tostring(math.floor(n)) or "?" end
+
+------------------------------------------------------------------ LOG
+local logScroll, statusLabel
+local function log(msg)
+	print("[Macro] " .. msg)
+	if statusLabel then statusLabel.Text = msg end
+	if not logScroll then return end
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Size = UDim2.new(1, -6, 0, 0)
+	l.AutomaticSize = Enum.AutomaticSize.Y
+	l.TextWrapped = true
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.Font = Enum.Font.Code
+	l.TextSize = 11
+	l.TextColor3 = Color3.fromRGB(220, 220, 220)
+	l.Text = msg
+	l.Parent = logScroll
+	local n = 0
+	for _, k in ipairs(logScroll:GetChildren()) do
+		if k:IsA("TextLabel") then n += 1 end
+	end
+	if n > CFG.MAX_LOG then
+		for _, k in ipairs(logScroll:GetChildren()) do
+			if k:IsA("TextLabel") then k:Destroy() break end
+		end
+	end
+	task.defer(function()
+		if logScroll then logScroll.CanvasPosition = Vector2.new(0, 1e6) end
+	end)
 end
 
-local FOLDER_NAME = "MacroTD_Data"
-pcall(function()
-    if isfolder and makefolder and not isfolder(FOLDER_NAME) then
-        makefolder(FOLDER_NAME)
-    end
+------------------------------------------------------------------ FILES
+local function writeJson(file, data)
+	if writefile then pcall(function() writefile(file, HttpService:JSONEncode(data)) end) end
+end
+local function readJson(file)
+	if isfile and isfile(file) then
+		local ok, d = pcall(function() return HttpService:JSONDecode(readfile(file)) end)
+		if ok and type(d) == "table" then return d end
+	end
+end
+local function deepcopy(t) return HttpService:JSONDecode(HttpService:JSONEncode(t)) end
+
+local function saveSettings() writeJson(CFG.SET_FILE, S) end
+local function saveCurrent() writeJson(CFG.CUR_FILE, macro) end
+local function saveSlots() writeJson(CFG.SLOT_FILE, slots) end
+
+------------------------------------------------------------------ CASH
+local cashObj, cashLabel, guiCash
+local function matchCash(n)
+	n = n:lower()
+	for _, k in ipairs(CFG.CASH_NAMES) do if n == k then return true end end
+end
+local function findCash()
+	local ls = LP:FindFirstChild("leaderstats")
+	if ls then
+		for _, v in ipairs(ls:GetChildren()) do
+			if v:IsA("ValueBase") and matchCash(v.Name) then return v end
+		end
+	end
+	for _, v in ipairs(LP:GetDescendants()) do
+		if v:IsA("ValueBase") and matchCash(v.Name) and type(v.Value) == "number" then return v end
+	end
+end
+local function getCash()
+	if not cashObj or not cashObj.Parent then cashObj = findCash() end
+	if cashObj then return tonumber(cashObj.Value) end
+	for _, k in ipairs(CFG.CASH_NAMES) do
+		local a = LP:GetAttribute(k) or LP:GetAttribute(k:sub(1, 1):upper() .. k:sub(2))
+		if a then return tonumber(a) end
+	end
+	if not guiCash or not guiCash.Parent then
+		local pg = LP:FindFirstChild("PlayerGui")
+		if pg then
+			for _, v in ipairs(pg:GetDescendants()) do
+				if v:IsA("TextLabel") and matchCash(v.Name) and v.Text:match("%d") then
+					guiCash = v break
+				end
+			end
+		end
+	end
+	if guiCash then
+		local digits = guiCash.Text:gsub("[^%d]", "")
+		return tonumber(digits)
+	end
+	return nil
+end
+
+------------------------------------------------------------------ TOWER HELPERS
+local towerFolder
+local function getFolder()
+	if not towerFolder or not towerFolder.Parent then
+		towerFolder = nil
+		for _, n in ipairs(CFG.TOWER_FOLDERS) do
+			local f = workspace:FindFirstChild(n, true)
+			if f then towerFolder = f break end
+		end
+	end
+	return towerFolder
+end
+local function towerCount()
+	local f = getFolder()
+	return f and #f:GetChildren() or nil
+end
+local function snapshot()
+	local s, f = {}, getFolder()
+	if f then for _, c in ipairs(f:GetChildren()) do s[c] = true end end
+	return s
+end
+
+local claimed = {}
+local function findNew(before, timeout)
+	local t = os.clock()
+	repeat
+		local f = getFolder()
+		if f then
+			for _, c in ipairs(f:GetChildren()) do
+				if not before[c] and not claimed[c] then return c end
+			end
+		end
+		task.wait(0.1)
+	until os.clock() - t > timeout
+end
+
+local function getPos(inst)
+	local ok, p = pcall(function() return inst:GetPivot().Position end)
+	return ok and p or nil
+end
+
+local function keysOf(inst)
+	local out = { { key = inst.Name, kind = { t = "name" } } }
+	for n, v in pairs(inst:GetAttributes()) do
+		if type(v) == "string" then table.insert(out, { key = v, kind = { t = "attr", n = n } }) end
+	end
+	for _, c in ipairs(inst:GetChildren()) do
+		if c:IsA("StringValue") then table.insert(out, { key = c.Value, kind = { t = "child", n = c.Name } }) end
+	end
+	return out
+end
+
+local function readKey(inst, kind)
+	if kind.t == "name" then return inst.Name
+	elseif kind.t == "attr" then return inst:GetAttribute(kind.n)
+	elseif kind.t == "child" then
+		local c = inst:FindFirstChild(kind.n)
+		return c and c.Value
+	end
+end
+
+local function verifyAction(kind, res, cashBefore, countBefore)
+	if res == false then return false end
+	if res == true or typeof(res) == "Instance" then return true end
+	if kind ~= "sell" and isGuid(res) then return true end
+	local t = os.clock()
+	repeat
+		local c, cash = towerCount(), getCash()
+		if kind == "place" then
+			if c and countBefore and c > countBefore then return true end
+			if cash and cashBefore and cash < cashBefore then return true end
+		elseif kind == "upgrade" then
+			if cash and cashBefore and cash < cashBefore then return true end
+		elseif kind == "sell" then
+			if c and countBefore and c < countBefore then return true end
+			if cash and cashBefore and cash > cashBefore then return true end
+		end
+		task.wait(0.1)
+	until os.clock() - t > CFG.VERIFY_TIMEOUT
+	return false
+end
+
+local function remoteByName(name)
+	local r = RS:FindFirstChild("Remotes")
+	r = r and r:FindFirstChild("Functions")
+	return r and r:FindFirstChild(name)
+end
+local function eventByName(name)
+	local r = RS:FindFirstChild("Remotes")
+	r = r and r:FindFirstChild("Events")
+	return r and r:FindFirstChild(name)
+end
+
+------------------------------------------------------------------ COUNT LABEL
+local countLabel
+local function refreshCount()
+	if not countLabel then return end
+	local p, u, s = 0, 0, 0
+	for _, a in ipairs(macro) do
+		if a.type == "place" then p += 1 elseif a.type == "upgrade" then u += 1 elseif a.type == "sell" then s += 1 end
+	end
+	countLabel.Text = ("P:%d U:%d S:%d"):format(p, u, s)
+end
+
+------------------------------------------------------------------ RECORD
+local seqCounter, nextFlush, pending = 0, 1, {}
+local knownIds, nameById, liveById = {}, {}, {}
+local queue, msgq = {}, {}
+
+local function flush()
+	while pending[nextFlush] ~= nil do
+		local e = pending[nextFlush]
+		pending[nextFlush] = nil
+		nextFlush += 1
+		if e then table.insert(macro, e) end
+	end
+	saveCurrent()
+	refreshCount()
+end
+
+local function register(pid, rid, guid, inst)
+	if rid then knownIds[rid] = { pid = pid, kind = { t = "ret" } } end
+	if guid and guid ~= rid then knownIds[guid] = { pid = pid, kind = { t = "guid" } } end
+	if inst then
+		claimed[inst] = true
+		for _, k in ipairs(keysOf(inst)) do
+			if type(k.key) == "string" and k.key ~= rid and k.key ~= guid then
+				if knownIds[k.key] then
+					knownIds[k.key] = { ambiguous = true }
+				else
+					knownIds[k.key] = { pid = pid, kind = k.kind }
+				end
+			end
+		end
+	end
+end
+
+local function resolve(X)
+	local info = knownIds[X]
+	if info and not info.ambiguous then return info.pid, info.kind end
+	local f = getFolder()
+	if f then
+		for _, inst in ipairs(f:GetChildren()) do
+			for _, k in ipairs(keysOf(inst)) do
+				if k.key == X then
+					local p = getPos(inst)
+					if p then
+						local best, bd
+						for pid, e in pairs(liveById) do
+							local d = (Vector3.new(e.x, 0, e.z) - Vector3.new(p.X, 0, p.Z)).Magnitude
+							if not bd or d < bd then best, bd = pid, d end
+						end
+						if best and bd < CFG.MATCH_DIST then return best, k.kind end
+					end
+				end
+			end
+		end
+	end
+end
+
+local function handleRecorded(kind, seq, args, ret, cashBefore, countBefore, snap)
+	log(("TANGKAP %s ret=%s cash=%s"):format(kind, tostring(ret), fmt(cashBefore)))
+	local ok = verifyAction(kind, ret, cashBefore, countBefore)
+	local entry = false
+
+	if kind == "place" then
+		local name, pos, rot, guid = args[1], args[2], args[3], args[4]
+		if typeof(pos) == "Vector3" then
+			if ok then
+				local inst = findNew(snap, 1.0)
+				task.wait(0.15)
+				local after = getCash()
+				local cost = (cashBefore and after and cashBefore > after) and (cashBefore - after) or nil
+				local rid = isGuid(ret) and ret or nil
+				local pid = rid or (type(guid) == "string" and guid) or ("p" .. seq)
+				entry = {
+					type = "place", id = pid, name = name,
+					x = pos.X, y = pos.Y, z = pos.Z,
+					rot = rot or 0, cost = cost,
+				}
+				nameById[pid] = name
+				liveById[pid] = entry
+				register(pid, rid, type(guid) == "string" and guid or nil, inst)
+				log(("REC place %s (%.1f, %.1f, %.1f) cost=%s cash=%s"):format(
+					tostring(name), pos.X, pos.Y, pos.Z, fmt(cost), fmt(after)))
+			else
+				log(("SKIP gagal place %s (tidak dicatat)"):format(tostring(name)))
+			end
+		end
+	else
+		local X = args[1]
+		if ok then
+			local pid, kd = resolve(X)
+			if not pid then
+				log(("DILEWATI %s: tower tidak dikenal id=%s"):format(kind, tostring(X)))
+			else
+				task.wait(0.15)
+				local after = getCash()
+				local cost
+				if kind == "upgrade" and cashBefore and after and cashBefore > after then
+					cost = cashBefore - after
+				end
+				local pe = liveById[pid]
+				if pe and not pe.keyKind then pe.keyKind = kd end
+				if kind == "sell" then liveById[pid] = nil end
+				entry = { type = kind, id = pid, name = nameById[pid], cost = cost }
+				log(("REC %s %s cost=%s cash=%s"):format(kind, tostring(nameById[pid]), fmt(cost), fmt(after)))
+			end
+		else
+			log(("SKIP gagal %s (tidak dicatat)"):format(kind))
+		end
+	end
+
+	pending[seq] = entry
+	flush()
+end
+
+------------------------------------------------------------------ PICKUP LEARN
+local learnTries = 0
+local function learnPickup(id)
+	if S.learned or learnTries >= 5 then return end
+	learnTries += 1
+	local found, kind
+	for _, d in ipairs(workspace:GetDescendants()) do
+		if d.Name == id then found, kind = d, { t = "name" } break end
+	end
+	if not found then
+		for _, d in ipairs(workspace:GetDescendants()) do
+			if d:IsA("Model") or d:IsA("BasePart") or d:IsA("Folder") then
+				for n, v in pairs(d:GetAttributes()) do
+					if v == id then found, kind = d, { t = "attr", n = n } break end
+				end
+				if not found then
+					for _, c in ipairs(d:GetChildren()) do
+						if c:IsA("StringValue") and c.Value == id then found, kind = d, { t = "child", n = c.Name } break end
+					end
+				end
+				if found then break end
+			end
+		end
+	end
+	if found then
+		S.learned = { parent = found.Parent and found.Parent.Name or "Workspace", kind = kind }
+		saveSettings()
+		table.insert(msgq, "BELAJAR pickup: ID ada di " .. found:GetFullName() .. " (" .. kind.t .. ")")
+	else
+		table.insert(msgq, "Pickup manual: instance item tidak ketemu di workspace (coba lagi)")
+	end
+end
+
+G.TMacro_Handler2 = function(self, method, call, ...)
+	if not alive then return call(...) end
+
+	if method == "FireServer" then
+		if self.Name == "ItemDrop" and not S.learned then
+			local a1, a2 = ...
+			if a1 == "Pickup" and type(a2) == "string" then pcall(learnPickup, a2) end
+		end
+		return call(...)
+	end
+
+	if mode ~= "record" then return call(...) end
+	local kind = TRACK[self.Name]
+	if not kind then return call(...) end
+	local args = table.pack(...)
+	seqCounter += 1
+	local seq = seqCounter
+	local okp, cashBefore, countBefore, snap = pcall(function()
+		return getCash(), towerCount(), snapshot()
+	end)
+	if not okp then cashBefore, countBefore, snap = nil, nil, {} end
+	local res = table.pack(call(...))
+	table.insert(queue, table.pack(kind, seq, args, res[1], cashBefore, countBefore, snap))
+	return table.unpack(res, 1, res.n)
+end
+
+task.spawn(function()
+	while alive do
+		local m = table.remove(msgq, 1)
+		if m then log(m) end
+		local it = table.remove(queue, 1)
+		if it then
+			task.spawn(function()
+				local ok, err = pcall(handleRecorded, table.unpack(it, 1, it.n))
+				if not ok then
+					log("ERROR catat: " .. tostring(err))
+					if pending[it[2]] == nil then pending[it[2]] = false end
+					pcall(flush)
+				end
+			end)
+		elseif not m then
+			task.wait(0.05)
+		end
+	end
 end)
 
--- ==================== UI PEMBUATAN UTAMA ====================
-local function getGuiParent()
-    local success, hui = pcall(function() return gethui and gethui() end)
-    if success and hui then return hui end
-    local successCore, coreGui = pcall(function() return game:GetService("CoreGui") end)
-    if successCore and coreGui then return coreGui end
-    return LocalPlayer:WaitForChild("PlayerGui")
+local function installHook()
+	if G.TMacro_HookJob == game.JobId and G.TMacro_HookJob ~= nil then return true end
+	if not (hookmetamethod and getnamecallmethod) then
+		log("ERROR: executor tidak support hookmetamethod")
+		return false
+	end
+	local old
+	old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+		local method = getnamecallmethod()
+		if (method == "InvokeServer" or method == "FireServer")
+			and typeof(self) == "Instance" and not checkcaller() then
+			local h = G.TMacro_Handler2
+			if h then
+				local s, m = self, method
+				local call = function(...)
+					if setnamecallmethod then setnamecallmethod(m) end
+					return old(s, ...)
+				end
+				return h(self, m, call, ...)
+			end
+		end
+		return old(self, ...)
+	end))
+	G.TMacro_HookJob = game.JobId
+	return true
 end
 
-local guiParent = getGuiParent()
-if guiParent:FindFirstChild("MacroGameplayGUI_v34") then
-    guiParent.MacroGameplayGUI_v34:Destroy()
+------------------------------------------------------------------ PLAYBACK
+local idMap, placeById = {}, {}
+
+local function targetFor(pid)
+	local m = idMap[pid]
+	if not m then return nil end
+	local pe = placeById[pid]
+	local kind = pe and pe.keyKind
+	if m.rid and (not kind or kind.t == "ret") then return m.rid end
+	if kind and kind.t == "guid" then return m.guid end
+	if kind and m.inst and m.inst.Parent then
+		local v = readKey(m.inst, kind)
+		if v then return v end
+	end
+	return m.rid or m.guid
 end
 
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "MacroGameplayGUI_v34"
-screenGui.ResetOnSpawn = false
-screenGui.Parent = guiParent
+local function doAction(a)
+	local remote = remoteByName(REMOTE_OF[a.type])
+	if not remote then return false end
+	local cashBefore, countBefore, snap = getCash(), towerCount(), snapshot()
 
-local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 360, 0, 35)
-mainFrame.Position = UDim2.new(0, 20, 0.2, -100)
-mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
-mainFrame.BorderSizePixel = 0
-mainFrame.Active = true
-mainFrame.Draggable = true
-mainFrame.Parent = screenGui
+	if a.type == "place" then
+		local guid = HttpService:GenerateGUID(false):lower()
+		local ok, res = pcall(function()
+			return remote:InvokeServer(a.name, Vector3.new(a.x, a.y, a.z), a.rot or 0, guid, workspace:GetServerTimeNow())
+		end)
+		if not ok then return false end
+		if verifyAction("place", res, cashBefore, countBefore) then
+			local inst = findNew(snap, 1.5)
+			if inst then claimed[inst] = true end
+			idMap[a.id] = { guid = guid, rid = isGuid(res) and res or nil, inst = inst }
+			return true
+		end
+		return false
+	end
 
-local corner = Instance.new("UICorner")
-corner.CornerRadius = UDim.new(0, 10)
-corner.Parent = mainFrame
+	local target = targetFor(a.id)
+	if not target then return false end
+	local ok, res = pcall(function() return remote:InvokeServer(target) end)
+	if not ok then return false end
+	return verifyAction(a.type, res, cashBefore, countBefore)
+end
+
+local refreshUI
+local function playMacro()
+	if #macro == 0 then log("Belum ada rekaman.") mode = "idle" refreshUI() return end
+	idMap, placeById, claimed = {}, {}, {}
+	for _, a in ipairs(macro) do
+		if a.type == "place" then placeById[a.id] = a end
+	end
+	log(("PLAY mulai, %d aksi. cash=%s"):format(#macro, fmt(getCash())))
+
+	for i, a in ipairs(macro) do
+		if mode ~= "play" or not alive then break end
+
+		if a.type ~= "place" and not idMap[a.id] then
+			log(("[%d/%d] LEWATI %s: tower %s belum ter-place"):format(i, #macro, a.type, tostring(a.name)))
+		else
+			local waitStart, lastLog = os.clock(), 0
+			while mode == "play" and alive do
+				local cash = getCash()
+				local needWait = a.type ~= "sell" and a.cost and cash and cash < a.cost
+					and (os.clock() - waitStart) < CFG.PROBE_AFTER
+				if needWait then
+					if os.clock() - lastLog > 3 then
+						lastLog = os.clock()
+						log(("[%d/%d] tunggu cash %s/%s (%s %s)"):format(i, #macro, fmt(cash), fmt(a.cost), a.type, tostring(a.name)))
+					end
+					task.wait(0.2)
+				elseif doAction(a) then
+					log(("[%d/%d] OK %s %s cash=%s"):format(i, #macro, a.type, tostring(a.name), fmt(getCash())))
+					if a.type == "sell" then idMap[a.id] = nil end
+					break
+				else
+					if os.clock() - lastLog > 3 then
+						lastLog = os.clock()
+						log(("[%d/%d] gagal %s %s, coba lagi. cash=%s"):format(i, #macro, a.type, tostring(a.name), fmt(getCash())))
+					end
+					task.wait(CFG.RETRY_DELAY)
+				end
+			end
+		end
+	end
+
+	if mode == "play" then log("PLAY selesai.") end
+	mode = "idle"
+	refreshUI()
+end
+
+------------------------------------------------------------------ GUI DETECTION (wave & speed)
+local function guiVisible(o)
+	local p = o
+	while p and p ~= game do
+		if p:IsA("GuiObject") and not p.Visible then return false end
+		if p:IsA("ScreenGui") and not p.Enabled then return false end
+		p = p.Parent
+	end
+	return true
+end
+
+local waveLbl, nextWaveScan = nil, 0
+local function getWave()
+	if not waveLbl or not waveLbl.Parent then
+		waveLbl = nil
+		if os.clock() < nextWaveScan then return nil end
+		nextWaveScan = os.clock() + 5
+		local pg = LP:FindFirstChild("PlayerGui")
+		if not pg then return nil end
+		for _, v in ipairs(pg:GetDescendants()) do
+			if v:IsA("TextLabel") and v.Text:upper():match("^%s*WAVE%s*%d+%s*/%s*%d+") then
+				waveLbl = v break
+			end
+		end
+	end
+	if waveLbl then
+		if not guiVisible(waveLbl) then return 0 end
+		return tonumber(waveLbl.Text:upper():match("WAVE%s*(%d+)"))
+	end
+	return nil
+end
+
+local speedPairs, nextSpeedScan = nil, 0
+local function findSpeedBtn(scope, except)
+	if not scope then return nil end
+	for _, d in ipairs(scope:GetDescendants()) do
+		if (d:IsA("TextLabel") or d:IsA("TextButton")) and d ~= except and d.Text:match("^%s*[%d%.]+%s*[xX]%s*$") then
+			return d
+		end
+	end
+end
+local function buildSpeedPairs()
+	speedPairs = {}
+	local pg = LP:FindFirstChild("PlayerGui")
+	if not pg then return end
+	for _, v in ipairs(pg:GetDescendants()) do
+		if v:IsA("TextLabel") then
+			local t = v.Text:upper()
+			if t == "ACTIVE" or t == "NORMAL" or t == "GET PASS" then
+				local b = findSpeedBtn(v.Parent, v) or findSpeedBtn(v.Parent and v.Parent.Parent, v)
+				if b then table.insert(speedPairs, { status = v, btn = b }) end
+			end
+		end
+	end
+end
+local function detectSpeed()
+	if speedPairs then
+		for _, p in ipairs(speedPairs) do
+			if not p.status.Parent then speedPairs = nil break end
+		end
+	end
+	if not speedPairs or (#speedPairs == 0 and os.clock() > nextSpeedScan) then
+		nextSpeedScan = os.clock() + 5
+		buildSpeedPairs()
+	end
+	for _, p in ipairs(speedPairs) do
+		if p.status.Text:upper() == "ACTIVE" then
+			return tonumber(p.btn.Text:match("([%d%.]+)"))
+		end
+	end
+	return nil
+end
+
+------------------------------------------------------------------ AUTO SPEED
+local speedTried, speedFired, lastSpeed = 0, false, -1e9
+local function resetSpeedState() speedTried, speedFired = 0, false end
+
+local function fireSpeed(v)
+	local ev = eventByName("SpeedToggle")
+	if not ev then return end
+	ev:FireServer(v)
+	speedTried += 1
+	lastSpeed = os.clock()
+	log(("AUTO SPEED: kirim x%s (percobaan %d)"):format(tostring(v), speedTried))
+end
+
+task.spawn(function()
+	while alive do
+		task.wait(1.5)
+		pcall(function()
+			local want = S.speed
+			if not want or want == 0 then return end
+			local w = getWave()
+			if w == 0 then resetSpeedState() return end
+			local cur = detectSpeed()
+			if cur then
+				if math.abs(cur - want) < 0.01 then speedTried = 0 return end
+				if speedTried < 4 and os.clock() - lastSpeed > 3 then fireSpeed(want) end
+				if speedTried == 4 then
+					speedTried += 1
+					log("AUTO SPEED: server tidak menerima x" .. tostring(want) .. ", berhenti mencoba.")
+				end
+			elseif not speedFired then
+				speedFired = true
+				fireSpeed(want)
+			end
+		end)
+	end
+end)
+
+------------------------------------------------------------------ AUTO VOTE DIFFICULTY
+local voteTries, lastVote = 0, -1e9
+
+local function fireVote()
+	local ev = eventByName("CastDifficultyVote")
+	if not ev then
+		voteTries = 99
+		log("AUTO VOTE: event CastDifficultyVote tidak ketemu (bukan di match?)")
+		return
+	end
+	ev:FireServer(S.difficulty)
+	voteTries += 1
+	lastVote = os.clock()
+	log(("AUTO VOTE: %s (percobaan %d)"):format(S.difficulty, voteTries))
+end
+
+task.spawn(function()
+	while alive do
+		task.wait(1)
+		if S.autoVote then
+			pcall(function()
+				local w = getWave()
+				if w and w > 0 then voteTries = 0 return end
+				if voteTries < 3 and os.clock() - lastVote > 4 then fireVote() end
+			end)
+		end
+	end
+end)
+
+------------------------------------------------------------------ AUTO START
+local lastReady = -1e9
+task.spawn(function()
+	while alive do
+		task.wait(1)
+		if S.autoStart then
+			pcall(function()
+				local w = getWave()
+				if S.autoVote and voteTries == 0 then return end -- tunggu vote dulu
+				if S.autoVote and voteTries < 99 and os.clock() - lastVote < 3 then return end
+				local gap = (w == nil) and 30 or 6
+				if (w == nil or w == 0) and os.clock() - lastReady > gap then
+					local ev = eventByName("ReadyUp")
+					if ev then
+						ev:FireServer()
+						lastReady = os.clock()
+						log("AUTO START: ReadyUp dikirim")
+					end
+				end
+			end)
+		end
+	end
+end)
+
+------------------------------------------------------------------ AUTO REPLAY
+local resultsAt = -1e9
+local resultConns = {}
+
+local function hookResultEvents(folder)
+	for _, ev in ipairs(folder:GetChildren()) do
+		if ev:IsA("RemoteEvent") and ev.Name ~= "ResultsAction" then
+			local n = ev.Name:lower()
+			for _, p in ipairs(CFG.RESULT_EVENT_HINTS) do
+				if n:find(p, 1, true) then
+					table.insert(resultConns, ev.OnClientEvent:Connect(function()
+						resultsAt = os.clock()
+					end))
+					log("Pantau event hasil: " .. ev.Name)
+					break
+				end
+			end
+		end
+	end
+end
+
+local function resultsVisible()
+	if os.clock() - resultsAt < 60 then return true, "event" end
+	local pg = LP:FindFirstChild("PlayerGui")
+	if not pg then return false end
+	for _, v in ipairs(pg:GetDescendants()) do
+		if v:IsA("TextLabel") or v:IsA("TextButton") then
+			local t = v.Text
+			if #t > 0 and #t < 24 then
+				local u = t:upper():gsub("[^%u ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+				if CFG.RESULT_TEXTS[u] and guiVisible(v) then return true, t end
+			end
+		end
+	end
+	return false
+end
+
+local replayFirst, lastReplay = nil, -1e9
+task.spawn(function()
+	while alive do
+		task.wait(2)
+		if S.autoReplay then
+			pcall(function()
+				if mode == "record" then replayFirst = nil return end
+				local seen, why = resultsVisible()
+				if not seen then replayFirst = nil return end
+				if not replayFirst then
+					replayFirst = os.clock()
+					log("AUTO REPLAY: layar hasil terdeteksi (" .. tostring(why) .. ")")
+				end
+				if os.clock() - replayFirst >= CFG.REPLAY_DELAY and os.clock() - lastReplay > 8 then
+					lastReplay = os.clock()
+					local ev = eventByName("ResultsAction")
+					if ev then
+						ev:FireServer("Rejoin")
+						log("AUTO REPLAY: Rejoin dikirim")
+					else
+						log("AUTO REPLAY: event ResultsAction tidak ketemu")
+					end
+				end
+			end)
+		end
+	end
+end)
+
+------------------------------------------------------------------ AUTO PICKUP
+local tracked, pickupConn, pickupCount = {}, nil, 0
+
+local function hinted(inst)
+	local p = inst.Parent
+	while p and p ~= workspace and p ~= game do
+		local n = p.Name:lower()
+		for _, h in ipairs(CFG.DROP_HINTS) do
+			if n:find(h, 1, true) then return true end
+		end
+		p = p.Parent
+	end
+	return false
+end
+
+local function pickupId(inst)
+	local tf = getFolder()
+	if tf and inst:IsDescendantOf(tf) then return nil end
+	if S.learned and S.learned.parent then
+		if not inst.Parent or inst.Parent.Name ~= S.learned.parent then return nil end
+		local v = readKey(inst, S.learned.kind)
+		return type(v) == "string" and v or nil
+	end
+	if not hinted(inst) then return nil end
+	for _, k in ipairs(keysOf(inst)) do
+		if isGuid(k.key) then return k.key end
+	end
+end
+
+local function firePickup(t)
+	local ev = eventByName("ItemDrop")
+	if not ev then return end
+	pcall(function() ev:FireServer("Pickup", t.id) end)
+	t.n += 1
+	t.last = os.clock()
+	if t.n == 1 then
+		pickupCount += 1
+		log(("AUTO PICKUP #%d id=%s"):format(pickupCount, t.id:sub(1, 8)))
+	end
+end
+
+local function trackPickup(inst)
+	if tracked[inst] then return end
+	local id = pickupId(inst)
+	if not id then return end
+	local t = { id = id, n = 0, last = 0 }
+	tracked[inst] = t
+	firePickup(t)
+end
+
+local function onAdded(inst)
+	if not S.autoPickup then return end
+	local p = inst.Parent
+	if not p then return end
+	if S.learned then
+		if p.Name ~= S.learned.parent then return end
+	elseif not hinted(inst) then
+		return
+	end
+	task.delay(0.2, function()
+		if alive and S.autoPickup and inst.Parent then trackPickup(inst) end
+	end)
+end
+
+local function scanExisting()
+	if S.learned then
+		local f = workspace:FindFirstChild(S.learned.parent, true)
+		if f then for _, c in ipairs(f:GetChildren()) do trackPickup(c) end end
+	else
+		for _, n in ipairs(CFG.DROP_FOLDERS) do
+			local f = workspace:FindFirstChild(n, true)
+			if f then for _, c in ipairs(f:GetDescendants()) do trackPickup(c) end end
+		end
+	end
+end
+
+local function setPickup(on)
+	S.autoPickup = on
+	if on and not pickupConn then
+		pickupConn = workspace.DescendantAdded:Connect(onAdded)
+		task.spawn(scanExisting)
+		if not S.learned then
+			log("Pickup aktif (mode tebak). Ambil 1 item manual supaya skrip belajar lokasi ID.")
+		end
+	elseif not on and pickupConn then
+		pickupConn:Disconnect()
+		pickupConn = nil
+	end
+end
+
+task.spawn(function()
+	while alive do
+		task.wait(0.5)
+		if S.autoPickup then
+			for inst, t in pairs(tracked) do
+				if not inst.Parent then
+					tracked[inst] = nil
+				elseif t.n < 4 and os.clock() - t.last > 1.5 then
+					firePickup(t)
+				end
+			end
+		end
+	end
+end)
+
+------------------------------------------------------------------ UI
+local parent
+pcall(function() parent = (gethui and gethui()) or game:GetService("CoreGui") end)
+if not parent then parent = LP:WaitForChild("PlayerGui") end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "TMacroUI"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 999
+pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+gui.Parent = parent
+
+local FULL = UDim2.fromOffset(270, 290)
+local frame = Instance.new("Frame")
+frame.Size = FULL
+frame.Position = UDim2.new(0, 10, 0.1, 0)
+frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = gui
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+local function mkBtn(par, text, pos, size, color)
+	local b = Instance.new("TextButton")
+	b.Position, b.Size, b.BackgroundColor3 = pos, size, color
+	b.BorderSizePixel = 0
+	b.Text = text
+	b.TextColor3 = Color3.new(1, 1, 1)
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 12
+	b.Modal = false
+	b.AutoButtonColor = true
+	b.Parent = par
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+	return b
+end
+local function mkLabel(par, text, pos, size, align, color)
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Position, l.Size = pos, size
+	l.TextXAlignment = align or Enum.TextXAlignment.Left
+	l.TextColor3 = color or Color3.new(1, 1, 1)
+	l.Font = Enum.Font.GothamBold
+	l.TextSize = 12
+	l.Text = text
+	l.Parent = par
+	return l
+end
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -40, 0, 35)
-title.Position = UDim2.new(0, 10, 0, 0)
-title.BackgroundTransparency = 1
-title.Text = "Macro TD v34.33 (UI Fix)"
-title.TextColor3 = Color3.fromRGB(255, 255, 255)
-title.TextSize = 12
-title.Font = Enum.Font.SourceSansBold
+title.Size = UDim2.new(1, -36, 0, 30)
+title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+title.BorderSizePixel = 0
+title.Text = "  Tower Macro v3.1"
 title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = mainFrame
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 13
+title.Active = true
+title.Parent = frame
+Instance.new("UICorner", title).CornerRadius = UDim.new(0, 8)
 
-local minimizeBtn = Instance.new("TextButton")
-minimizeBtn.Size = UDim2.new(0, 25, 0, 25)
-minimizeBtn.Position = UDim2.new(1, -30, 0, 5)
-minimizeBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-minimizeBtn.Text = "+"
-minimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-minimizeBtn.Font = Enum.Font.SourceSansBold
-minimizeBtn.TextSize = 14
-minimizeBtn.Parent = mainFrame
+local minBtn = mkBtn(frame, "-", UDim2.new(1, -32, 0, 0), UDim2.fromOffset(32, 30), Color3.fromRGB(60, 60, 75))
+minBtn.TextSize = 18
 
-local contentFrame = Instance.new("Frame")
-contentFrame.Size = UDim2.new(1, 0, 1, -35)
-contentFrame.Position = UDim2.new(0, 0, 0, 35)
-contentFrame.BackgroundTransparency = 1
-contentFrame.Visible = false
-contentFrame.Parent = mainFrame
+local body = Instance.new("Frame")
+body.Size = UDim2.new(1, 0, 1, -30)
+body.Position = UDim2.fromOffset(0, 30)
+body.BackgroundTransparency = 1
+body.Parent = frame
 
-local recordBtn = Instance.new("TextButton")
-recordBtn.Size = UDim2.new(0, 160, 0, 32)
-recordBtn.Position = UDim2.new(0, 15, 0, 5)
-recordBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
-recordBtn.Text = "Record: OFF"
-recordBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-recordBtn.Font = Enum.Font.SourceSansBold
-recordBtn.TextSize = 12
-recordBtn.Parent = contentFrame
+-- tabs
+local tabNames = { "Makro", "Auto", "Log" }
+local tabBtns, pages = {}, {}
+for i, n in ipairs(tabNames) do
+	tabBtns[n] = mkBtn(body, n, UDim2.new((i - 1) / 3, i == 1 and 6 or 2, 0, 2), UDim2.new(1 / 3, -4, 0, 22), Color3.fromRGB(55, 55, 70))
+	local pg = Instance.new("Frame")
+	pg.BackgroundTransparency = 1
+	pg.Position = UDim2.fromOffset(6, 28)
+	pg.Size = UDim2.new(1, -12, 1, -58)
+	pg.Visible = false
+	pg.Parent = body
+	pages[n] = pg
+end
+local function showTab(n)
+	for k, p in pairs(pages) do
+		p.Visible = (k == n)
+		tabBtns[k].BackgroundColor3 = (k == n) and Color3.fromRGB(80, 90, 150) or Color3.fromRGB(55, 55, 70)
+	end
+end
+for n, b in pairs(tabBtns) do b.MouseButton1Click:Connect(function() showTab(n) end) end
 
-local playBtn = Instance.new("TextButton")
-playBtn.Size = UDim2.new(0, 160, 0, 32)
-playBtn.Position = UDim2.new(0, 185, 0, 5)
-playBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-playBtn.Text = "Play: OFF"
-playBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-playBtn.Font = Enum.Font.SourceSansBold
-playBtn.TextSize = 12
-playBtn.Parent = contentFrame
+statusLabel = mkLabel(body, "", UDim2.new(0, 6, 1, -26), UDim2.new(1, -12, 0, 22), nil, Color3.fromRGB(180, 200, 255))
+statusLabel.Font = Enum.Font.Code
+statusLabel.TextSize = 10
+statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+
+local refreshToggles, playSlotLabel
+
+-- Makro page
+local pm = pages.Makro
+cashLabel = mkLabel(pm, "Cash: ?", UDim2.new(0, 0, 0, 0), UDim2.new(0.5, 0, 0, 18), nil, Color3.fromRGB(120, 255, 140))
+countLabel = mkLabel(pm, "P:0 U:0 S:0", UDim2.new(0.5, 0, 0, 0), UDim2.new(0.5, 0, 0, 18), Enum.TextXAlignment.Right, Color3.fromRGB(200, 200, 255))
+local recBtn = mkBtn(pm, "Record", UDim2.new(0, 0, 0, 20), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(190, 50, 50))
+local playBtn = mkBtn(pm, "Play", UDim2.new(0.5, 3, 0, 20), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(50, 150, 70))
 
 local nameBox = Instance.new("TextBox")
-nameBox.Size = UDim2.new(0, 105, 0, 28)
-nameBox.Position = UDim2.new(0, 15, 0, 45)
-nameBox.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-nameBox.Text = "makro1"
-nameBox.PlaceholderText = "Nama..."
-nameBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-nameBox.Font = Enum.Font.SourceSans
+nameBox.Position = UDim2.new(0, 0, 0, 52)
+nameBox.Size = UDim2.new(1, 0, 0, 24)
+nameBox.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+nameBox.BorderSizePixel = 0
+nameBox.PlaceholderText = "nama makro"
+nameBox.Text = ""
+nameBox.TextColor3 = Color3.new(1, 1, 1)
+nameBox.PlaceholderColor3 = Color3.fromRGB(140, 140, 150)
+nameBox.Font = Enum.Font.Gotham
 nameBox.TextSize = 12
-nameBox.Parent = contentFrame
+nameBox.ClearTextOnFocus = false
+nameBox.Parent = pm
+Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
 
-local saveBtn = Instance.new("TextButton")
-saveBtn.Size = UDim2.new(0, 68, 0, 28)
-saveBtn.Position = UDim2.new(0, 125, 0, 45)
-saveBtn.BackgroundColor3 = Color3.fromRGB(60, 100, 180)
-saveBtn.Text = "Save"
-saveBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-saveBtn.Font = Enum.Font.SourceSansBold
-saveBtn.TextSize = 11
-saveBtn.Parent = contentFrame
+local saveBtn = mkBtn(pm, "Save", UDim2.new(0, 0, 0, 80), UDim2.new(1 / 3, -3, 0, 24), Color3.fromRGB(50, 110, 170))
+local loadBtn = mkBtn(pm, "Load", UDim2.new(1 / 3, 1, 0, 80), UDim2.new(1 / 3, -3, 0, 24), Color3.fromRGB(110, 90, 170))
+local delBtn = mkBtn(pm, "Hapus", UDim2.new(2 / 3, 2, 0, 80), UDim2.new(1 / 3, -2, 0, 24), Color3.fromRGB(150, 70, 70))
 
-local loadBtn = Instance.new("TextButton")
-loadBtn.Size = UDim2.new(0, 68, 0, 28)
-loadBtn.Position = UDim2.new(0, 198, 0, 45)
-loadBtn.BackgroundColor3 = Color3.fromRGB(140, 100, 40)
-loadBtn.Text = "Load"
-loadBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-loadBtn.Font = Enum.Font.SourceSansBold
-loadBtn.TextSize = 11
-loadBtn.Parent = contentFrame
+local slotList = Instance.new("ScrollingFrame")
+slotList.Position = UDim2.new(0, 0, 0, 108)
+slotList.Size = UDim2.new(1, 0, 1, -108)
+slotList.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
+slotList.BorderSizePixel = 0
+slotList.ScrollBarThickness = 4
+slotList.CanvasSize = UDim2.new()
+slotList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+slotList.Parent = pm
+local slotLayout = Instance.new("UIListLayout", slotList)
+slotLayout.Padding = UDim.new(0, 2)
 
-local deleteBtn = Instance.new("TextButton")
-deleteBtn.Size = UDim2.new(0, 68, 0, 28)
-deleteBtn.Position = UDim2.new(0, 271, 0, 45)
-deleteBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
-deleteBtn.Text = "Delete"
-deleteBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-deleteBtn.Font = Enum.Font.SourceSansBold
-deleteBtn.TextSize = 11
-deleteBtn.Parent = contentFrame
-
-local elevatorSelectBtn = Instance.new("TextButton")
-elevatorSelectBtn.Size = UDim2.new(0, 160, 0, 28)
-elevatorSelectBtn.Position = UDim2.new(0, 15, 0, 80)
-elevatorSelectBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
-elevatorSelectBtn.Text = "Map: Toilet City"
-elevatorSelectBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-elevatorSelectBtn.Font = Enum.Font.SourceSansBold
-elevatorSelectBtn.TextSize = 11
-elevatorSelectBtn.Parent = contentFrame
-
-local autoElevatorBtn = Instance.new("TextButton")
-autoElevatorBtn.Size = UDim2.new(0, 160, 0, 28)
-autoElevatorBtn.Position = UDim2.new(0, 185, 0, 80)
-autoElevatorBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-autoElevatorBtn.Text = "Auto Elevator: OFF"
-autoElevatorBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-autoElevatorBtn.Font = Enum.Font.SourceSansBold
-autoElevatorBtn.TextSize = 11
-autoElevatorBtn.Parent = contentFrame
-
-local speed15Btn = Instance.new("TextButton")
-speed15Btn.Size = UDim2.new(0, 160, 0, 28)
-speed15Btn.Position = UDim2.new(0, 15, 0, 115)
-speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-speed15Btn.Text = "Speed 1.5x: OFF"
-speed15Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-speed15Btn.Font = Enum.Font.SourceSansBold
-speed15Btn.TextSize = 11
-speed15Btn.Parent = contentFrame
-
-local speed20Btn = Instance.new("TextButton")
-speed20Btn.Size = UDim2.new(0, 160, 0, 28)
-speed20Btn.Position = UDim2.new(0, 185, 0, 115)
-speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-speed20Btn.Text = "Speed 2x: OFF"
-speed20Btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-speed20Btn.Font = Enum.Font.SourceSansBold
-speed20Btn.TextSize = 11
-speed20Btn.Parent = contentFrame
-
-local autoPlayBtn = Instance.new("TextButton")
-autoPlayBtn.Size = UDim2.new(0, 330, 0, 28)
-autoPlayBtn.Position = UDim2.new(0, 15, 0, 150)
-autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-autoPlayBtn.Text = "Auto Play Rejoin: OFF"
-autoPlayBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-autoPlayBtn.Font = Enum.Font.SourceSansBold
-autoPlayBtn.TextSize = 11
-autoPlayBtn.Parent = contentFrame
-
-local logFrame = Instance.new("ScrollingFrame")
-logFrame.Size = UDim2.new(0, 330, 0, 225)
-logFrame.Position = UDim2.new(0, 15, 0, 185)
-logFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
-logFrame.BorderSizePixel = 0
-logFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-logFrame.ScrollBarThickness = 4
-logFrame.Parent = contentFrame
-
-local UIListLayout = Instance.new("UIListLayout")
-UIListLayout.Parent = logFrame
-UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-UIListLayout.Padding = UDim.new(0, 2)
-
-local function logConsole(msg)
-    print("[MACRO TD]: " .. msg)
-    local logText = Instance.new("TextLabel")
-    logText.Size = UDim2.new(1, -10, 0, 16)
-    logText.BackgroundTransparency = 1
-    logText.Text = " " .. msg
-    logText.TextColor3 = Color3.fromRGB(180, 220, 180)
-    logText.TextXAlignment = Enum.TextXAlignment.Left
-    logText.Font = Enum.Font.Code
-    logText.TextSize = 10
-    logText.Parent = logFrame
-    
-    logFrame.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y)
-    logFrame.CanvasPosition = Vector2.new(0, logFrame.CanvasSize.Y.Offset)
+local selectedSlot
+local function refreshSlotList()
+	for _, c in ipairs(slotList:GetChildren()) do
+		if c:IsA("TextButton") then c:Destroy() end
+	end
+	local names = {}
+	for n in pairs(slots) do table.insert(names, n) end
+	table.sort(names)
+	for _, n in ipairs(names) do
+		local b = mkBtn(slotList, ("%s (%d aksi)"):format(n, #slots[n]), UDim2.new(), UDim2.new(1, -6, 0, 22),
+			(n == selectedSlot) and Color3.fromRGB(80, 90, 150) or Color3.fromRGB(45, 45, 58))
+		b.TextXAlignment = Enum.TextXAlignment.Left
+		b.Font = Enum.Font.Gotham
+		b.MouseButton1Click:Connect(function()
+			selectedSlot = n
+			S.playSlot = n
+			saveSettings()
+			nameBox.Text = n
+			refreshSlotList()
+			if refreshToggles then refreshToggles() end
+		end)
+	end
 end
 
-local isMinimized = true
-minimizeBtn.MouseButton1Click:Connect(function()
-    isMinimized = not isMinimized
-    if isMinimized then
-        contentFrame.Visible = false
-        mainFrame.Size = UDim2.new(0, 360, 0, 35)
-        minimizeBtn.Text = "+"
-    else
-        contentFrame.Visible = true
-        mainFrame.Size = UDim2.new(0, 360, 0, 430)
-        minimizeBtn.Text = "-"
-    end
+local function slotName()
+	local n = nameBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+	if n == "" then n = selectedSlot or "" end
+	return n ~= "" and n or nil
+end
+
+saveBtn.MouseButton1Click:Connect(function()
+	if mode == "record" then log("Stop record dulu sebelum Save.") return end
+	local n = slotName()
+	if not n then log("Isi nama makro dulu.") return end
+	if #macro == 0 then log("Makro kosong, tidak ada yang disimpan.") return end
+	slots[n] = deepcopy(macro)
+	selectedSlot = n
+	S.playSlot = n
+	saveSlots()
+	saveSettings()
+	refreshSlotList()
+	if refreshToggles then refreshToggles() end
+	log(("SAVE '%s' (%d aksi) tersimpan permanen."):format(n, #macro))
 end)
 
--- ==================== VARIABEL & LOGIKA UTAMA ====================
-local isRecording = false
-local isPlaying = false
-local autoPlayOnRejoin = false
-local autoElevator = false
-local selectedElevator = "Elevator2"
-local speed15Active = false
-local speed20Active = false
-
-local recordedData = {}
-local recordedTowers = {}
-local instanceToTowerIndex = {}
-local towerCounter = 0
-local recordStartTime = 0
-
-local lastClickedTower = nil
-
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if isRecording and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
-        local mousePos = UserInputService:GetMouseLocation()
-        local unitRay = Camera:ViewportPointToRay(mousePos.X, mousePos.Y)
-        local raycastParams = RaycastParams.new()
-        raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-        raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
-        local result = Workspace:Raycast(unitRay.Origin, unitRay.Direction * 500, raycastParams)
-        if result and result.Instance then
-            local model = result.Instance:FindFirstAncestorOfClass("Model")
-            if model and model ~= LocalPlayer.Character then
-                lastClickedTower = model
-            end
-        end
-    end
+loadBtn.MouseButton1Click:Connect(function()
+	if mode ~= "idle" then log("Stop record/play dulu sebelum Load.") return end
+	local n = slotName()
+	if not n or not slots[n] then log("Pilih makro yang tersimpan dulu.") return end
+	macro = deepcopy(slots[n])
+	selectedSlot = n
+	S.playSlot = n
+	saveCurrent()
+	saveSettings()
+	refreshCount()
+	refreshSlotList()
+	if refreshToggles then refreshToggles() end
+	log(("LOAD '%s' (%d aksi) siap di-Play."):format(n, #macro))
 end)
 
-local elevatorOptions = {
-    {Name = "Toilet City", Code = "Elevator2"},
-    {Name = "Desert", Code = "Elevator8"},
-    {Name = "Cameraman HQ", Code = "Elevator12"}
-}
-local currentElevatorIndex = 1
-
-local lastValidCash = 500
-local function getPlayerCash()
-    local success, cash = pcall(function()
-        if LocalPlayer:FindFirstChild("leaderstats") then
-            for _, stat in ipairs(LocalPlayer.leaderstats:GetChildren()) do
-                if stat:IsA("ValueBase") and typeof(stat.Value) == "number" then
-                    lastValidCash = stat.Value
-                    return stat.Value
-                end
-            end
-        end
-        local pg = LocalPlayer:FindFirstChild("PlayerGui")
-        if pg then
-            for _, gui in ipairs(pg:GetDescendants()) do
-                if gui:IsA("TextLabel") then
-                    local nameLower = gui.Name:lower()
-                    local text = gui.Text
-                    if nameLower:find("cash") or nameLower:find("money") or nameLower:find("coin") or nameLower:find("balance") then
-                        local num = tonumber(text:gsub("[^%d]", ""))
-                        if num and num >= 0 and num < 10000000 then
-                            lastValidCash = num
-                            return num
-                        end
-                    end
-                end
-            end
-        end
-        return lastValidCash
-    end)
-    return success and cash or lastValidCash
-end
-
-local function setGameSpeed(speedVal)
-    pcall(function()
-        local speedRemote = ReplicatedStorage.ModuleLoader.Shared.Network.RemoteFunction.ChangeSpeed
-        if speedRemote then
-            speedRemote:InvokeServer(speedVal)
-        end
-    end)
-end
-
-function saveConfig()
-    if not writefile then return end
-    local cfg = {
-        autoPlay = autoPlayOnRejoin,
-        autoElevator = autoElevator,
-        selectedElevator = selectedElevator,
-        elevatorIndex = currentElevatorIndex,
-        selectedMacro = nameBox.Text,
-        speed15 = speed15Active,
-        speed20 = speed20Active
-    }
-    pcall(function()
-        writefile(FOLDER_NAME .. "/config.json", HttpService:JSONEncode(cfg))
-    end)
-end
-
-function loadConfig()
-    if not readfile or not isfile or not isfile(FOLDER_NAME .. "/config.json") then return end
-    pcall(function()
-        local data = HttpService:JSONDecode(readfile(FOLDER_NAME .. "/config.json"))
-        if data then
-            autoPlayOnRejoin = data.autoPlay or false
-            autoElevator = data.autoElevator or false
-            selectedElevator = data.selectedElevator or "Elevator2"
-            currentElevatorIndex = data.elevatorIndex or 1
-            if data.selectedMacro then nameBox.Text = data.selectedMacro end
-            
-            speed15Active = data.speed15 or false
-            speed20Active = data.speed20 or false
-            
-            autoPlayBtn.Text = autoPlayOnRejoin and "Auto Play Rejoin: ON" or "Auto Play Rejoin: OFF"
-            autoPlayBtn.BackgroundColor3 = autoPlayOnRejoin and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
-            
-            autoElevatorBtn.Text = autoElevator and "Auto Elevator: ON" or "Auto Elevator: OFF"
-            autoElevatorBtn.BackgroundColor3 = autoElevator and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(80, 80, 90)
-            
-            if speed15Active then
-                speed15Btn.Text = "Speed 1.5x: ON"
-                speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-                setGameSpeed(1.5)
-                logConsole("Loaded Speed: x1.5 (Active)")
-            elseif speed20Active then
-                speed20Btn.Text = "Speed 2x: ON"
-                speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-                setGameSpeed(2)
-                logConsole("Loaded Speed: x2 (Active)")
-            end
-            
-            elevatorSelectBtn.Text = "Map: " .. elevatorOptions[currentElevatorIndex].Name
-        end
-    end)
-end
-
-speed15Btn.MouseButton1Click:Connect(function()
-    speed15Active = not speed15Active
-    if speed15Active then
-        speed20Active = false
-        speed20Btn.Text = "Speed 2x: OFF"
-        speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        
-        speed15Btn.Text = "Speed 1.5x: ON"
-        speed15Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        setGameSpeed(1.5)
-        logConsole("Speed Game diubah ke x1.5")
-    else
-        speed15Btn.Text = "Speed 1.5x: OFF"
-        speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        setGameSpeed(1)
-        logConsole("Speed Game dikembalikan ke x1")
-    end
-    saveConfig()
+delBtn.MouseButton1Click:Connect(function()
+	local n = slotName()
+	if not n or not slots[n] then log("Pilih makro yang mau dihapus.") return end
+	slots[n] = nil
+	if selectedSlot == n then selectedSlot = nil end
+	if S.playSlot == n then S.playSlot = nil saveSettings() end
+	nameBox.Text = ""
+	saveSlots()
+	refreshSlotList()
+	if refreshToggles then refreshToggles() end
+	log(("HAPUS '%s'."):format(n))
 end)
 
-speed20Btn.MouseButton1Click:Connect(function()
-    speed20Active = not speed20Active
-    if speed20Active then
-        speed15Active = false
-        speed15Btn.Text = "Speed 1.5x: OFF"
-        speed15Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        
-        speed20Btn.Text = "Speed 2x: ON"
-        speed20Btn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        setGameSpeed(2)
-        logConsole("Speed Game diubah ke x2")
-    else
-        speed20Btn.Text = "Speed 2x: OFF"
-        speed20Btn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-        setGameSpeed(1)
-        logConsole("Speed Game dikembalikan ke x1")
-    end
-    saveConfig()
+-- Auto page (scrollable)
+local pa = Instance.new("ScrollingFrame")
+pa.BackgroundTransparency = 1
+pa.BorderSizePixel = 0
+pa.Size = UDim2.new(1, 0, 1, 0)
+pa.ScrollBarThickness = 3
+pa.CanvasSize = UDim2.new()
+pa.AutomaticCanvasSize = Enum.AutomaticSize.Y
+pa.Parent = pages.Auto
+local paLayout = Instance.new("UIListLayout", pa)
+paLayout.Padding = UDim.new(0, 4)
+paLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+local lo = 0
+local function nextLO() lo += 1 return lo end
+
+local function styleToggle(b, label, on)
+	b.Text = label .. ": " .. (on and "ON" or "OFF")
+	b.BackgroundColor3 = on and Color3.fromRGB(50, 150, 70) or Color3.fromRGB(70, 70, 80)
+end
+local function mkToggle()
+	local b = mkBtn(pa, "", UDim2.new(), UDim2.new(1, -8, 0, 28), Color3.new())
+	b.LayoutOrder = nextLO()
+	return b
+end
+
+local tPlay = mkToggle()
+playSlotLabel = mkLabel(pa, "", UDim2.new(), UDim2.new(1, -8, 0, 16), nil, Color3.fromRGB(170, 190, 255))
+playSlotLabel.Font = Enum.Font.Gotham
+playSlotLabel.TextSize = 11
+playSlotLabel.TextTruncate = Enum.TextTruncate.AtEnd
+playSlotLabel.LayoutOrder = nextLO()
+
+local tVote = mkToggle()
+
+local diffRow = Instance.new("Frame")
+diffRow.BackgroundTransparency = 1
+diffRow.Size = UDim2.new(1, -8, 0, 26)
+diffRow.LayoutOrder = nextLO()
+diffRow.Parent = pa
+local diffBtns = {}
+for i, name in ipairs(DIFFS) do
+	local b = mkBtn(diffRow, name, UDim2.new((i - 1) / 4, i == 1 and 0 or 2, 0, 0), UDim2.new(0.25, -2, 1, 0), Color3.fromRGB(55, 55, 70))
+	b.TextSize = 10
+	diffBtns[name] = b
+	b.MouseButton1Click:Connect(function()
+		S.difficulty = name
+		voteTries = 0
+		saveSettings()
+		refreshToggles()
+		log("Difficulty vote: " .. name)
+	end)
+end
+
+local tReplay = mkToggle()
+local t15 = mkToggle()
+local t2 = mkToggle()
+local tStart = mkToggle()
+local tPick = mkToggle()
+
+local hint = mkLabel(pa, "Pengaturan tersimpan otomatis. Taruh skrip di folder autoexecute Delta agar Auto Play & Auto Replay jalan otomatis setelah rejoin.",
+	UDim2.new(), UDim2.new(1, -8, 0, 56), nil, Color3.fromRGB(150, 150, 165))
+hint.Font = Enum.Font.Gotham
+hint.TextSize = 10
+hint.TextWrapped = true
+hint.TextYAlignment = Enum.TextYAlignment.Top
+hint.LayoutOrder = nextLO()
+
+refreshToggles = function()
+	styleToggle(tPlay, "Auto Play (rejoin)", S.autoPlay)
+	playSlotLabel.Text = "Makro dipilih: " .. ((S.playSlot and slots[S.playSlot]) and S.playSlot or "- (tap nama di tab Makro)")
+	styleToggle(tVote, "Auto Vote", S.autoVote)
+	for name, b in pairs(diffBtns) do
+		b.BackgroundColor3 = (S.difficulty == name) and Color3.fromRGB(80, 90, 150) or Color3.fromRGB(55, 55, 70)
+	end
+	styleToggle(tReplay, "Auto Replay", S.autoReplay)
+	styleToggle(t15, "Auto Speed x1.5", S.speed == 1.5)
+	styleToggle(t2, "Auto Speed x2", S.speed == 2)
+	styleToggle(tStart, "Auto Start Match", S.autoStart)
+	styleToggle(tPick, "Auto Pickup Item", S.autoPickup)
+end
+
+tPlay.MouseButton1Click:Connect(function()
+	S.autoPlay = not S.autoPlay
+	saveSettings(); refreshToggles()
+	log("Auto Play (rejoin): " .. (S.autoPlay and "ON" or "OFF"))
+end)
+tVote.MouseButton1Click:Connect(function()
+	S.autoVote = not S.autoVote
+	voteTries = 0
+	saveSettings(); refreshToggles()
+	log("Auto Vote: " .. (S.autoVote and ("ON (" .. S.difficulty .. ")") or "OFF"))
+end)
+tReplay.MouseButton1Click:Connect(function()
+	S.autoReplay = not S.autoReplay
+	replayFirst = nil
+	saveSettings(); refreshToggles()
+	log("Auto Replay: " .. (S.autoReplay and "ON" or "OFF"))
+end)
+t15.MouseButton1Click:Connect(function()
+	S.speed = (S.speed == 1.5) and 0 or 1.5
+	resetSpeedState()
+	saveSettings(); refreshToggles()
+	log("Auto Speed: " .. (S.speed == 0 and "OFF" or ("x" .. S.speed)))
+end)
+t2.MouseButton1Click:Connect(function()
+	S.speed = (S.speed == 2) and 0 or 2
+	resetSpeedState()
+	saveSettings(); refreshToggles()
+	log("Auto Speed: " .. (S.speed == 0 and "OFF" or ("x" .. S.speed)))
+end)
+tStart.MouseButton1Click:Connect(function()
+	S.autoStart = not S.autoStart
+	lastReady = -1e9
+	saveSettings(); refreshToggles()
+	log("Auto Start: " .. (S.autoStart and "ON" or "OFF"))
+end)
+tPick.MouseButton1Click:Connect(function()
+	setPickup(not S.autoPickup)
+	saveSettings(); refreshToggles()
+	log("Auto Pickup: " .. (S.autoPickup and "ON" or "OFF"))
 end)
 
-local function teleportToElevator(elevatorCode)
-    local char = LocalPlayer.Character
-    if not char then return end
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return end
+-- Log page
+logScroll = Instance.new("ScrollingFrame")
+logScroll.Size = UDim2.new(1, 0, 1, 0)
+logScroll.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
+logScroll.BorderSizePixel = 0
+logScroll.ScrollBarThickness = 4
+logScroll.CanvasSize = UDim2.new()
+logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+logScroll.Parent = pages.Log
+Instance.new("UIListLayout", logScroll).SortOrder = Enum.SortOrder.LayoutOrder
 
-    local targetElevator = nil
-    for _, obj in ipairs(Workspace:GetDescendants()) do
-        if obj:IsA("Model") and obj.Name == elevatorCode then
-            targetElevator = obj
-            break
-        end
-    end
-
-    if targetElevator then
-        local cf = targetElevator:GetPivot()
-        root.CFrame = cf + Vector3.new(0, 3, 0)
-    end
+refreshUI = function()
+	recBtn.Text = (mode == "record") and "Stop Rec" or "Record"
+	playBtn.Text = (mode == "play") and "Stop" or "Play"
 end
 
-local function serializeVal(v)
-    if typeof(v) == "CFrame" then
-        return {__type = "CFrame", c = {v:GetComponents()}}
-    elseif typeof(v) == "Vector3" then
-        return {__type = "Vector3", x = v.X, y = v.Y, z = v.Z}
-    elseif typeof(v) == "Instance" then
-        return {__type = "Instance", name = v.Name, className = v.ClassName}
-    elseif type(v) == "table" then
-        local res = {}
-        for k, val in pairs(v) do
-            res[tostring(k)] = serializeVal(val)
-        end
-        return res
-    else
-        return v
-    end
-end
+recBtn.MouseButton1Click:Connect(function()
+	if mode == "play" then return end
+	if mode == "record" then
+		mode = "idle"
+		saveCurrent()
+		log(("Record berhenti. Total %d aksi. Tekan Save untuk simpan permanen."):format(#macro))
+	else
+		macro = {}
+		seqCounter, nextFlush, pending = 0, 1, {}
+		knownIds, nameById, liveById, claimed, queue = {}, {}, {}, {}, {}
+		refreshCount()
+		mode = "record"
+		log("Record mulai. cash=" .. fmt(getCash()))
+	end
+	refreshUI()
+end)
 
-local function deserializeVal(v)
-    if type(v) == "table" then
-        if v.__type == "CFrame" then
-            return CFrame.new(unpack(v.c))
-        elseif v.__type == "Vector3" then
-            return Vector3.new(v.x, v.y, v.z)
-        elseif v.__type == "Instance" then
-            return {__isSerializedInstance = true, name = v.name, className = v.className}
-        else
-            local res = {}
-            for k, val in pairs(v) do
-                local numKey = tonumber(k)
-                res[numKey or k] = deserializeVal(val)
-            end
-            return res
-        end
-    else
-        return v
-    end
-end
+playBtn.MouseButton1Click:Connect(function()
+	if mode == "play" then
+		mode = "idle"
+		log("Play dihentikan.")
+	elseif mode == "idle" then
+		mode = "play"
+		refreshUI()
+		task.spawn(playMacro)
+	end
+	refreshUI()
+end)
 
-elevatorSelectBtn.MouseButton1Click:Connect(function()
-    currentElevatorIndex = currentElevatorIndex + 1
-    if currentElevatorIndex > #elevatorOptions then currentElevatorIndex = 1 end
-    local current = elevatorOptions[currentElevatorIndex]
-    selectedElevator = current.Code
-    elevatorSelectBtn.Text = "Map: " .. current.Name
-    saveConfig()
+local minimized = false
+minBtn.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	body.Visible = not minimized
+	frame.Size = minimized and UDim2.fromOffset(130, 30) or FULL
+	title.Size = minimized and UDim2.new(1, -32, 0, 30) or UDim2.new(1, -36, 0, 30)
+	minBtn.Text = minimized and "+" or "-"
+end)
+
+local dragging, dragStart, startPos
+title.InputBegan:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging, dragStart, startPos = true, i.Position, frame.Position
+	end
+end)
+UIS.InputChanged:Connect(function(i)
+	if dragging and (i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseMovement) then
+		local d = i.Position - dragStart
+		frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+	end
+end)
+UIS.InputEnded:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = false
+	end
 end)
 
 task.spawn(function()
-    while true do
-        task.wait(2)
-        if autoElevator then
-            pcall(function()
-                teleportToElevator(selectedElevator)
-                local Remote = ReplicatedStorage:FindFirstChild("ModuleLoader")
-                if Remote then
-                    Remote.Shared.Network.RemoteFunction.ElevatorEnter:InvokeServer(selectedElevator)
-                end
-            end)
-        end
-    end
+	while alive do
+		cashLabel.Text = "Cash: " .. fmt(getCash())
+		task.wait(0.5)
+	end
 end)
 
-autoElevatorBtn.MouseButton1Click:Connect(function()
-    autoElevator = not autoElevator
-    if autoElevator then
-        autoElevatorBtn.Text = "Auto Elevator: ON"
-        autoElevatorBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        teleportToElevator(selectedElevator)
-    else
-        autoElevatorBtn.Text = "Auto Elevator: OFF"
-        autoElevatorBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-    end
-    saveConfig()
+G.TMacro_Destroy = function()
+	alive = false
+	mode = "idle"
+	G.TMacro_Handler2 = nil
+	if pickupConn then pickupConn:Disconnect() pickupConn = nil end
+	for _, c in ipairs(resultConns) do pcall(function() c:Disconnect() end) end
+	pcall(function() gui:Destroy() end)
+end
+
+------------------------------------------------------------------ AUTO PLAY (rejoin)
+local function startAutoPlay()
+	task.spawn(function()
+		log("AUTO PLAY: menunggu game siap...")
+		local t = os.clock()
+		while alive and S.autoPlay and not remoteByName("RequestPlacement") and os.clock() - t < 90 do
+			task.wait(1)
+		end
+		if not (alive and S.autoPlay) then return end
+		if not remoteByName("RequestPlacement") then
+			log("AUTO PLAY batal: remote place tidak ketemu (bukan di match?)")
+			return
+		end
+		t = os.clock()
+		while alive and not LP.Character and os.clock() - t < 15 do task.wait(0.5) end
+		t = os.clock()
+		while alive and getCash() == nil and os.clock() - t < 20 do task.wait(0.5) end
+		task.wait(CFG.AUTOPLAY_DELAY)
+		if not (alive and S.autoPlay) or mode ~= "idle" then return end
+
+		local m, src
+		if S.playSlot and slots[S.playSlot] then
+			m, src = deepcopy(slots[S.playSlot]), "'" .. S.playSlot .. "'"
+		else
+			m, src = macro, "makro terakhir"
+		end
+		if not m or #m == 0 then
+			log("AUTO PLAY batal: belum ada makro dipilih / kosong.")
+			return
+		end
+		macro = m
+		refreshCount()
+		mode = "play"
+		refreshUI()
+		log("AUTO PLAY: menjalankan " .. src)
+		playMacro()
+	end)
+end
+
+------------------------------------------------------------------ START
+local sv = readJson(CFG.SET_FILE)
+if sv then
+	S.speed = tonumber(sv.speed) or 0
+	S.autoStart = sv.autoStart == true
+	S.autoPickup = sv.autoPickup == true
+	S.learned = sv.learned
+	S.autoPlay = sv.autoPlay == true
+	S.playSlot = type(sv.playSlot) == "string" and sv.playSlot or nil
+	S.autoVote = sv.autoVote == true
+	S.autoReplay = sv.autoReplay == true
+	for _, d in ipairs(DIFFS) do
+		if sv.difficulty == d then S.difficulty = d end
+	end
+end
+macro = readJson(CFG.CUR_FILE) or {}
+for i, a in ipairs(macro) do
+	if a.type == "place" and not a.id then a.id = "p" .. i end
+end
+slots = readJson(CFG.SLOT_FILE) or {}
+if S.playSlot and slots[S.playSlot] then
+	selectedSlot = S.playSlot
+	nameBox.Text = S.playSlot
+end
+
+showTab("Makro")
+refreshCount()
+refreshSlotList()
+refreshToggles()
+refreshUI()
+
+local hooked = installHook()
+log("Hook: " .. (hooked and "aktif" or "GAGAL"))
+log(("Makro aktif: %d aksi | Slot tersimpan: %d"):format(#macro, (function() local c = 0 for _ in pairs(slots) do c += 1 end return c end)()))
+
+-- pantau event hasil match (untuk Auto Replay)
+task.spawn(function()
+	local r = RS:WaitForChild("Remotes", 30)
+	local e = r and r:WaitForChild("Events", 30)
+	if e and alive then hookResultEvents(e) end
 end)
 
-autoPlayBtn.MouseButton1Click:Connect(function()
-    autoPlayOnRejoin = not autoPlayOnRejoin
-    if autoPlayOnRejoin then
-        autoPlayBtn.Text = "Auto Play Rejoin: ON"
-        autoPlayBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-    else
-        autoPlayBtn.Text = "Auto Play Rejoin: OFF"
-        autoPlayBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
-    end
-    saveConfig()
-end)
+local wantPickup = S.autoPickup
+S.autoPickup = false
+if wantPickup then setPickup(true) end
+refreshToggles()
 
-saveBtn.MouseButton1Click:Connect(function()
-    if #recordedData == 0 then
-        logConsole("Tidak ada data rekaman untuk disimpan!")
-        return
-    end
-    local fileName = FOLDER_NAME .. "/" .. nameBox.Text .. ".json"
-    
-    local serializedRec = {}
-    for idx, act in ipairs(recordedData) do
-        table.insert(serializedRec, {
-            Type = act.Type, Time = act.Time, RemoteName = act.Remote.Name, Method = act.Method,
-            Args = serializeVal(act.Args), TowerIndex = act.TowerIndex, TargetIndex = act.TargetIndex,
-            PositionCF = act.PositionCF and serializeVal(act.PositionCF) or nil, CashCost = act.CashCost or 150,
-            TowerIDs = act.TowerIDs
-        })
-    end
-    
-    local serializedTowers = {}
-    for idx, tInfo in pairs(recordedTowers) do
-        serializedTowers[tostring(idx)] = { Index = tInfo.Index, PositionCF = tInfo.PositionCF and serializeVal(tInfo.PositionCF) or nil, IDs = tInfo.IDs }
-    end
-    
-    local fileContent = HttpService:JSONEncode({ Record = serializedRec, Towers = serializedTowers })
-    pcall(function()
-        writefile(fileName, fileContent)
-        saveConfig()
-        logConsole("Berhasil Save: " .. nameBox.Text)
-    end)
-end)
-
-function loadMacroFromFile(mName)
-    local fileName = FOLDER_NAME .. "/" .. mName .. ".json"
-    if not isfile or not isfile(fileName) then
-        logConsole("File " .. mName .. " tidak ditemukan!")
-        return false
-    end
-    
-    local success, res = pcall(function()
-        local content = readfile(fileName)
-        local data = HttpService:JSONDecode(content)
-        
-        recordedData = {}
-        recordedTowers = {}
-        
-        if data.Record then
-            for _, act in ipairs(data.Record) do
-                local remoteObj = ReplicatedStorage:FindFirstChild(act.RemoteName, true)
-                table.insert(recordedData, {
-                    Type = act.Type, 
-                    Time = act.Time, 
-                    Remote = remoteObj or ReplicatedStorage,
-                    RemoteName = act.RemoteName, 
-                    Method = act.Method, 
-                    Args = deserializeVal(act.Args),
-                    TowerIndex = act.TowerIndex or act.TargetIndex or 1,
-                    TargetIndex = act.TargetIndex or act.TowerIndex or 1,
-                    PositionCF = act.PositionCF and deserializeVal(act.PositionCF) or nil,
-                    CashCost = act.CashCost or 150,
-                    TowerIDs = act.TowerIDs or {}
-                })
-            end
-        end
-        
-        if data.Towers then
-            for idxStr, tInfo in pairs(data.Towers) do
-                local idx = tonumber(idxStr)
-                recordedTowers[idx] = { 
-                    Index = tInfo.Index or idx, 
-                    PositionCF = tInfo.PositionCF and deserializeVal(tInfo.PositionCF) or nil, 
-                    IDs = tInfo.IDs or {} 
-                }
-            end
-        end
-        return true
-    end)
-    
-    if success then
-        logConsole("Berhasil Load (Kompatibel): " .. mName .. " (" .. #recordedData .. " aksi)")
-        return true
-    else
-        logConsole("Gagal membaca file makro!")
-        return false
-    end
-end
-
-loadBtn.MouseButton1Click:Connect(function()
-    loadMacroFromFile(nameBox.Text)
-end)
-
-local function deleteMacroFile(mName)
-    local fileName = FOLDER_NAME .. "/" .. mName .. ".json"
-    if delfile and isfile and isfile(fileName) then
-        pcall(function()
-            delfile(fileName)
-            logConsole("Berhasil Hapus File: " .. mName)
-        end)
-    else
-        logConsole("File " .. mName .. " tidak ditemukan atau fungsi delfile tidak disupport!")
-    end
-end
-
-deleteBtn.MouseButton1Click:Connect(function()
-    deleteMacroFile(nameBox.Text)
-end)
-
-local function getRootFromModel(model)
-    if not model then return nil end
-    if model:IsA("Model") then
-        if model.PrimaryPart then return model.PrimaryPart end
-        if model:FindFirstChild("HumanoidRootPart") then return model.HumanoidRootPart end
-    end
-    if model:IsA("BasePart") then return model end
-    for _, child in ipairs(model:GetDescendants()) do
-        if child:IsA("BasePart") then return child end
-    end
-    return nil
-end
-
-local function getCFrameFromArgs(args)
-    for _, v in pairs(args) do
-        if typeof(v) == "CFrame" then return v end
-        if typeof(v) == "Vector3" then return CFrame.new(v) end
-        if type(v) == "table" then
-            local cf = getCFrameFromArgs(v)
-            if cf then return cf end
-        end
-    end
-    return nil
-end
-
-local function getTowerFromArgs(args)
-    for _, v in pairs(args) do
-        if typeof(v) == "Instance" and (v:IsA("Model") or v:IsA("BasePart")) then
-            if v ~= LocalPlayer.Character and not v:IsDescendantOf(LocalPlayer.Character) then
-                if v:IsA("BasePart") then return v.Parent end
-                return v
-            end
-        elseif type(v) == "table" then
-            local found = getTowerFromArgs(v)
-            if found then return found end
-        end
-    end
-    return nil
-end
-
-local function extractAllIDsFromModel(inst)
-    if not inst or not inst:IsA("Instance") then return {} end
-    local ids = {inst.Name}
-    for k, v in pairs(inst:GetAttributes()) do
-        if type(v) == "string" or type(v) == "number" then table.insert(ids, tostring(v)) end
-    end
-    for _, child in ipairs(inst:GetDescendants()) do
-        if child:IsA("ValueBase") and child.Value then table.insert(ids, tostring(child.Value)) end
-    end
-    return ids
-end
-
-local function getPrimaryID(inst)
-    if not inst or not inst:IsA("Instance") then return nil end
-    for k, v in pairs(inst:GetAttributes()) do
-        if k:lower():find("id") or k:lower():find("uuid") then return tostring(v) end
-    end
-    return inst.Name
-end
-
-local function findTowerNearPositionAdaptive(targetPos, excludeInstances)
-    excludeInstances = excludeInstances or {}
-    if not targetPos then return nil end
-    if typeof(targetPos) == "CFrame" then targetPos = targetPos.Position end
-    
-    for _, radius in ipairs({10, 15, 20}) do
-        local closest, closestDist = nil, radius
-        for _, obj in ipairs(Workspace:GetDescendants()) do
-            if obj:IsA("Model") and obj ~= LocalPlayer.Character then
-                if not excludeInstances[obj] then
-                    local root = getRootFromModel(obj)
-                    if root then
-                        local dist = (root.Position - targetPos).Magnitude
-                        if dist < closestDist then 
-                            closestDist = dist
-                            closest = obj 
-                        end
-                    end
-                end
-            end
-        end
-        if closest then return closest end
-    end
-    return nil
-end
-
-local function findTowerForAction(targetIdx, fallbackPos, sessionTowers, sessionTowerIDs)
-    local model = sessionTowers[targetIdx]
-    if model and model.Parent then return model end
-
-    local targetIDs = sessionTowerIDs[targetIdx] or (recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs)
-    if targetIDs and #targetIDs > 0 then
-        for _, obj in ipairs(Workspace:GetDescendants()) do
-            if obj:IsA("Model") and obj ~= LocalPlayer.Character then
-                local alreadyAssignedToOther = false
-                for idx, assignedModel in pairs(sessionTowers) do
-                    if idx ~= targetIdx and assignedModel == obj then
-                        alreadyAssignedToOther = true
-                        break
-                    end
-                end
-                
-                if not alreadyAssignedToOther then
-                    local objIDs = extractAllIDsFromModel(obj)
-                    for _, id in ipairs(targetIDs) do
-                        if #id > 2 then
-                            for _, oid in ipairs(objIDs) do
-                                if oid == id then
-                                    sessionTowers[targetIdx] = obj
-                                    sessionTowerIDs[targetIdx] = objIDs
-                                    return obj
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    if fallbackPos then
-        local excludeInstances = {}
-        for idx, t in pairs(sessionTowers) do
-            if idx ~= targetIdx and t then excludeInstances[t] = true end
-        end
-        local found = findTowerNearPositionAdaptive(fallbackPos, excludeInstances)
-        if found then
-            sessionTowers[targetIdx] = found
-            sessionTowerIDs[targetIdx] = extractAllIDsFromModel(found)
-            return found
-        end
-    end
-
-    return nil
-end
-
-local function resolveTargetIndex(args, targetModel, actionPos)
-    if targetModel and instanceToTowerIndex[targetModel] then
-        return instanceToTowerIndex[targetModel]
-    end
-
-    local function searchIDInTable(tbl)
-        for _, v in pairs(tbl) do
-            local vStr = tostring(v)
-            for idx, tInfo in pairs(recordedTowers) do
-                if tInfo.IDs then
-                    for _, id in ipairs(tInfo.IDs) do
-                        if tostring(id) == vStr and #vStr > 2 then
-                            return idx
-                        end
-                    end
-                end
-            end
-            if type(v) == "table" then
-                local found = searchIDInTable(v)
-                if found then return found end
-            end
-        end
-        return nil
-    end
-    
-    local matchedById = searchIDInTable(args)
-    if matchedById then return matchedById end
-    
-    local targetRoot = targetModel and getRootFromModel(targetModel)
-    local targetPos = targetRoot and targetRoot.Position or (targetModel and targetModel.PrimaryPart and targetModel.PrimaryPart.Position)
-    if not targetPos and actionPos then
-        targetPos = (typeof(actionPos) == "CFrame") and actionPos.Position or actionPos
-    end
-    if not targetPos then
-        local cf = getCFrameFromArgs(args)
-        if cf then targetPos = cf.Position end
-    end
-    
-    if targetPos then
-        local minDist = 999999
-        local bestIdx = 1
-        for idx, tInfo in pairs(recordedTowers) do
-            if tInfo.PositionCF then
-                local dist = (tInfo.PositionCF.Position - targetPos).Magnitude
-                if dist < minDist then
-                    minDist = dist
-                    bestIdx = idx
-                end
-            end
-        end
-        return bestIdx
-    end
-    
-    return 1
-end
-
-local function rebuildArgsForPlayback(oldArgs, recordedIDsList, newModel, newMatchIDs)
-    if not newModel then return oldArgs end
-    local newPrimaryID = getPrimaryID(newModel)
-    local targetRoot = getRootFromModel(newModel)
-    
-    local function processTable(tbl)
-        local res = {}
-        for k, v in pairs(tbl) do
-            if type(v) == "table" and v.__isSerializedInstance then
-                res[k] = newModel
-            elseif typeof(v) == "Instance" then
-                if v:IsA("Player") or v == LocalPlayer or (LocalPlayer.Character and v:IsDescendantOf(LocalPlayer.Character)) then
-                    res[k] = v
-                else
-                    res[k] = newModel
-                end
-            elseif typeof(v) == "CFrame" and targetRoot then
-                res[k] = targetRoot.CFrame
-            elseif typeof(v) == "Vector3" and targetRoot then
-                res[k] = targetRoot.Position
-            elseif type(v) == "string" or type(v) == "number" then
-                local strVal = tostring(v)
-                if type(v) == "number" and v < 10 then
-                    res[k] = v
-                else
-                    local replaced = false
-                    if recordedIDsList and #recordedIDsList > 0 then
-                        for i, oldID in ipairs(recordedIDsList) do
-                            if strVal == tostring(oldID) and #strVal > 2 then
-                                if newMatchIDs and newMatchIDs[i] then
-                                    res[k] = newMatchIDs[i]
-                                else
-                                    res[k] = newPrimaryID or newModel.Name
-                                end
-                                replaced = true
-                                break
-                            end
-                        end
-                    end
-                    if not replaced then
-                        res[k] = v
-                    end
-                end
-            elseif type(v) == "table" then
-                res[k] = processTable(v)
-            else
-                res[k] = v
-            end
-        end
-        return res
-    end
-    return processTable(oldArgs)
-end
-
-if not getgenv().MacroHookedTD then
-    getgenv().MacroHookedTD = true
-    local oldNamecall
-    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-        local method = getnamecallmethod()
-        local args = {...}
-        
-        if isRecording and (method == "FireServer" or method == "InvokeServer") then
-            local rName = self.Name
-            if rName == "TowerAdd" or rName == "TowerUpgrade" or rName == "TowerSell" then
-                task.spawn(function()
-                    pcall(function()
-                        local timeStamp = tick() - recordStartTime
-                        local cashBefore = getPlayerCash()
-                        
-                        if rName == "TowerAdd" then
-                            towerCounter = towerCounter + 1
-                            local currentIdx = towerCounter
-                            local cf = getCFrameFromArgs(args)
-                            
-                            local newlySpawnedModel = nil
-                            local checkTimer = 0
-                            repeat
-                                task.wait(0.1)
-                                checkTimer = checkTimer + 0.1
-                                newlySpawnedModel = findTowerNearPositionAdaptive(cf)
-                            until newlySpawnedModel or checkTimer >= 1.0
-                            
-                            local cashAfter = getPlayerCash()
-                            local cost = cashBefore - cashAfter
-                            
-                            if not cf and newlySpawnedModel then
-                                cf = newlySpawnedModel:GetPivot()
-                            end
-                            
-                            recordedTowers[currentIdx] = { 
-                                Index = currentIdx, 
-                                PositionCF = cf, 
-                                IDs = newlySpawnedModel and extractAllIDsFromModel(newlySpawnedModel) or {},
-                                Model = newlySpawnedModel
-                            }
-                            
-                            if newlySpawnedModel then
-                                instanceToTowerIndex[newlySpawnedModel] = currentIdx
-                            end
-                            
-                            local actionEntry = {
-                                Type = "ADD", Time = timeStamp, Remote = self, Method = method,
-                                Args = serializeVal(args), TowerIndex = currentIdx, PositionCF = cf, CashCost = 150,
-                                TowerIDs = recordedTowers[currentIdx].IDs
-                            }
-                            table.insert(recordedData, actionEntry)
-                            local entryIndex = #recordedData
-                            
-                            if (cost > 0 and cost < 100000) or newlySpawnedModel then
-                                if cost > 0 and cost < 100000 then actionEntry.CashCost = cost end
-                                logConsole(string.format("[Rec] TowerAdd #%d Sukses (Cost: %d)", currentIdx, actionEntry.CashCost))
-                            else
-                                table.remove(recordedData, entryIndex)
-                                recordedTowers[currentIdx] = nil
-                                if newlySpawnedModel then instanceToTowerIndex[newlySpawnedModel] = nil end
-                                towerCounter = towerCounter - 1
-                                logConsole("[Rec] TowerAdd Gagal/Dibatalkan (Dihapus dari rekaman)")
-                            end
-                            
-                        elseif rName == "TowerUpgrade" or rName == "TowerSell" then
-                            local targetModel = getTowerFromArgs(args) or lastClickedTower
-                            local actionPos = targetModel and targetModel:GetPivot() or getCFrameFromArgs(args)
-                            local targetIdx = resolveTargetIndex(args, targetModel, actionPos)
-                            local actionType = (rName == "TowerUpgrade" and "UPGRADE" or "SELL")
-                            local targetIDs = recordedTowers[targetIdx] and recordedTowers[targetIdx].IDs or {}
-                            
-                            local actionEntry = {
-                                Type = actionType, Time = timeStamp, Remote = self, Method = method,
-                                Args = serializeVal(args), TargetIndex = targetIdx, CashCost = 150,
-                                TowerIDs = targetIDs, PositionCF = actionPos
-                            }
-                            table.insert(recordedData, actionEntry)
-                            local entryIndex = #recordedData
-                            
-                            local isSuccess = false
-                            local checkTimer = 0
-                            repeat
-                                task.wait(0.1)
-                                checkTimer = checkTimer + 0.1
-                                local cashAfter = getPlayerCash()
-                                local cost = cashBefore - cashAfter
-                                
-                                if rName == "TowerUpgrade" and cost > 0 and cost < 100000 then
-                                    isSuccess = true
-                                    actionEntry.CashCost = cost
-                                    break
-                                elseif rName == "TowerSell" and cost < 0 then
-                                    isSuccess = true
-                                    actionEntry.CashCost = math.abs(cost)
-                                    break
-                                end
-                            until checkTimer >= 1.0
-                            
-                            if isSuccess then
-                                logConsole(string.format("[Rec] %s -> Tower #%d Sukses", actionType, targetIdx))
-                            else
-                                table.remove(recordedData, entryIndex)
-                                logConsole(string.format("[Rec] %s Gagal/Dibatalkan (Dihapus dari rekaman)", actionType))
-                            end
-                        end
-                    end)
-                end)
-            end
-        end
-        return oldNamecall(self, ...)
-    end))
-end
-
-recordBtn.MouseButton1Click:Connect(function()
-    if isPlaying then return end
-    isRecording = not isRecording
-    if isRecording then
-        recordedData = {}
-        recordedTowers = {}
-        instanceToTowerIndex = {}
-        lastClickedTower = nil
-        towerCounter = 0
-        recordStartTime = tick()
-        recordBtn.Text = "Record: ON"
-        recordBtn.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
-        logConsole("RECORDING STARTED...")
-    else
-        recordBtn.Text = "Record: OFF"
-        recordBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
-        logConsole("RECORDING STOPPED. Total: " .. #recordedData)
-    end
-end)
-
-function startPlayback()
-    if #recordedData == 0 then
-        logConsole("Data rekaman kosong!")
-        return
-    end
-    
-    isPlaying = true
-    playBtn.Text = "Playing..."
-    playBtn.BackgroundColor3 = Color3.fromRGB(210, 140, 20)
-    
-    local currentSpeed = 1
-    if speed15Active then 
-        currentSpeed = 1.5
-        setGameSpeed(1.5)
-    elseif speed20Active then 
-        currentSpeed = 2 
-        setGameSpeed(2)
-    else
-        setGameSpeed(1)
-    end
-    
-    logConsole(string.format("PLAYBACK STARTED (Speed: %.1fx)...", currentSpeed))
-    
-    task.spawn(function()
-        local playbackStart = tick()
-        local sessionTowers = {}
-        local sessionTowerIDs = {}
-        
-        for index, action in ipairs(recordedData) do
-            if not isPlaying then break end
-            
-            local targetTime = action.Time / currentSpeed
-            local waitTime = targetTime - (tick() - playbackStart)
-            if waitTime > 0 then task.wait(waitTime) end
-            if not isPlaying then break end
-            
-            pcall(function()
-                local remoteObj = action.Remote or ReplicatedStorage:FindFirstChild(action.RemoteName, true)
-                local realArgs = deserializeVal(action.Args)
-                local requiredCost = action.CashCost or 100
-
-                if action.Type == "ADD" then
-                    local newlySpawnedModel = nil
-                    local hasFired = false
-                    
-                    repeat
-                        while isPlaying and getPlayerCash() < requiredCost do
-                            logConsole(string.format("[%d/%d] Menunggu Cash Place (Butuh: %d)...", index, #recordedData, requiredCost))
-                            task.wait(1)
-                        end
-                        if not isPlaying then return end
-
-                        local beforeSnapshot = {}
-                        for _, v in ipairs(Workspace:GetDescendants()) do
-                            if v:IsA("Model") then beforeSnapshot[v] = true end
-                        end
-                        
-                        if not hasFired then
-                            if action.Method == "InvokeServer" then remoteObj:InvokeServer(unpack(realArgs))
-                            else remoteObj:FireServer(unpack(realArgs)) end
-                            hasFired = true
-                            task.wait(0.3 / currentSpeed)
-                        end
-                        
-                        local timer = 0
-                        repeat
-                            task.wait(0.1)
-                            timer = timer + 0.1
-                            for _, v in ipairs(Workspace:GetDescendants()) do
-                                local alreadyAssigned = false
-                                for _, existingModel in pairs(sessionTowers) do
-                                    if existingModel == v then alreadyAssigned = true; break end
-                                end
-                                if v:IsA("Model") and not beforeSnapshot[v] and not alreadyAssigned and v ~= LocalPlayer.Character then
-                                    if getRootFromModel(v) then
-                                        newlySpawnedModel = v; break
-                                    end
-                                end
-                            end
-                        until newlySpawnedModel or timer >= (2.0 / currentSpeed)
-                        
-                        if not newlySpawnedModel and action.PositionCF then
-                            local excludeInstances = {}
-                            for _, t in pairs(sessionTowers) do excludeInstances[t] = true end
-                            newlySpawnedModel = findTowerNearPositionAdaptive(action.PositionCF, excludeInstances)
-                        end
-                        
-                        if not newlySpawnedModel then
-                            task.wait(0.5 / currentSpeed)
-                        end
-                    until newlySpawnedModel or not isPlaying
-
-                    if newlySpawnedModel then
-                        local tIdx = action.TowerIndex or action.TargetIndex or 1
-                        sessionTowers[tIdx] = newlySpawnedModel
-                        sessionTowerIDs[tIdx] = extractAllIDsFromModel(newlySpawnedModel)
-                        logConsole(string.format("[%d/%d] PLACE Tower #%d OK", index, #recordedData, tIdx))
-                    end
-
-                elseif action.Type == "UPGRADE" or action.Type == "SELL" then
-                    local targetIdx = action.TargetIndex or action.TowerIndex or 1
-                    
-                    local successAction = false
-                    repeat
-                        while isPlaying and action.Type == "UPGRADE" and getPlayerCash() < requiredCost do
-                            logConsole(string.format("[%d/%d] Menunggu Cash Upgrade #%d (Butuh: %d)...", index, #recordedData, targetIdx, requiredCost))
-                            task.wait(1)
-                        end
-                        if not isPlaying then return end
-
-                        local fallbackPos = (recordedTowers[targetIdx] and recordedTowers[targetIdx].PositionCF) or action.PositionCF or getCFrameFromArgs(realArgs)
-                        local currentModel = findTowerForAction(targetIdx, fallbackPos, sessionTowers, sessionTowerIDs)
-                        
-                        if currentModel then
-                            local cashBefore = getPlayerCash()
-                            task.wait(0.15 / currentSpeed)
-                            local currentMatchIDs = sessionTowerIDs[targetIdx] or extractAllIDsFromModel(currentModel)
-                            local playArgs = rebuildArgsForPlayback(realArgs, action.TowerIDs, currentModel, currentMatchIDs)
-                            
-                            if action.Method == "InvokeServer" then 
-                                remoteObj:InvokeServer(unpack(playArgs))
-                            else 
-                                remoteObj:FireServer(unpack(playArgs)) 
-                            end
-                            
-                            local verifyTimer = 0
-                            repeat
-                                task.wait(0.1)
-                                verifyTimer = verifyTimer + 0.1
-                                local cashAfter = getPlayerCash()
-                                local costChange = cashBefore - cashAfter
-                                
-                                if action.Type == "UPGRADE" and costChange > 0 and costChange < 100000 then
-                                    successAction = true
-                                    if costChange > 0 then action.CashCost = costChange end
-                                    
-                                    task.wait(0.1)
-                                    local refreshedModel = findTowerForAction(targetIdx, fallbackPos, sessionTowers, sessionTowerIDs)
-                                    if refreshedModel then
-                                        sessionTowers[targetIdx] = refreshedModel
-                                        sessionTowerIDs[targetIdx] = extractAllIDsFromModel(refreshedModel)
-                                    end
-                                    break
-                                elseif action.Type == "SELL" and costChange < 0 then
-                                    successAction = true
-                                    break
-                                end
-                            until verifyTimer >= 0.8
-                            
-                            if successAction then
-                                logConsole(string.format("[%d/%d] %s Tower #%d DONE", index, #recordedData, action.Type, targetIdx))
-                                task.wait(0.35 / currentSpeed)
-                            else
-                                logConsole(string.format("[%d/%d] %s Tower #%d Gagal/Belum Respon, Mencoba Ulang...", index, #recordedData, action.Type, targetIdx))
-                                task.wait(0.5 / currentSpeed)
-                            end
-                        else
-                            logConsole(string.format("[%d/%d] Model Tower #%d Belum Ada, Menunggu...", index, #recordedData, targetIdx))
-                            task.wait(1 / currentSpeed)
-                        end
-                    until successAction or not isPlaying
-                end
-            end)
-        end
-        
-        isPlaying = false
-        playBtn.Text = "Play: OFF"
-        playBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        logConsole("=== PLAYBACK FINISHED ===")
-    end)
-end
-
-playBtn.MouseButton1Click:Connect(function()
-    if isRecording then return end
-    if isPlaying then
-        isPlaying = false
-        playBtn.Text = "Play: OFF"
-        playBtn.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-        logConsole("Playback stopped.")
-        return
-    end
-    startPlayback()
-end)
-
-loadConfig()
-logConsole("Macro Ready.")
-
-if autoPlayOnRejoin then
-    task.spawn(function()
-        logConsole("Auto Play Rejoin Aktif. Memuat file...")
-        task.wait(2)
-        if loadMacroFromFile(nameBox.Text) then
-            startPlayback()
-        end
-    end)
-end
+if S.autoPlay then startAutoPlay() end
