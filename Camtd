@@ -1,5 +1,5 @@
 --[[
-  Tower Macro v3.6 - Delta Mobile
+  Tower Macro v3.7 - Delta Mobile
   Makro berbasis WAVE + WAKTU GAME (otomatis menyesuaikan speed x1 / x1.5 / x2)
   Record/Play (place, upgrade, sell, ability) + Save Slot + Auto Speed + Auto Start (jeda 5 detik)
   + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay + Auto Pickup (jalan ke item)
@@ -71,11 +71,13 @@ local S = {
 	autoPlay = false, playSlot = nil,
 	autoVote = false, difficulty = "Easy",
 	autoReplay = false,
+	spdMode = 0, -- 0 = otomatis (baca dari layar), 1 / 1.5 / 2 = manual
 }
 
 -- ===== WAKTU GAME (detik setara speed x1) =====
 local gt = 0                 -- jam game: bertambah = waktu nyata x speed
 local curSpeed = 1           -- speed game terdeteksi
+local speedSeen = false      -- speed berhasil terbaca / diatur manual
 local curWave = 0            -- wave saat ini (0 = belum mulai / lobby)
 local waveStartGT = 0        -- jam game saat wave ini dimulai
 local waveSeen = false       -- label WAVE pernah ditemukan
@@ -638,66 +640,170 @@ local function guiVisible(o)
 	return true
 end
 
-local waveLbl, nextWaveScan = nil, 0
-local function getWave()
-	if not waveLbl or not waveLbl.Parent then
-		waveLbl = nil
-		if os.clock() < nextWaveScan then return nil end
-		nextWaveScan = os.clock() + 5
-		local pg = LP:FindFirstChild("PlayerGui")
-		if not pg then return nil end
-		for _, v in ipairs(pg:GetDescendants()) do
-			if v:IsA("TextLabel") and v.Text:upper():match("^%s*WAVE%s*%d+%s*/%s*%d+") then
-				waveLbl = v break
+local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+
+-- teks yang benar-benar tampil di layar (tanpa tag RichText)
+local function txt(o)
+	local t = o.ContentText
+	if not t or t == "" then t = o.Text end
+	return (t:gsub("<[^>]+>", ""))
+end
+
+local function center(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
+
+-- ---- WAVE
+local waveSrc, nextWaveScan = nil, 0
+
+local function parseFull(t)
+	local a = t:upper():match("WAVE%s*(%d+)%s*/%s*%d+")
+	return a and tonumber(a)
+end
+
+local function scanWave()
+	local pg = LP:FindFirstChild("PlayerGui")
+	if not pg then return nil end
+	local fullVis, fullAny = nil, nil
+	local words, ratios = {}, {}
+	for _, v in ipairs(pg:GetDescendants()) do
+		if v:IsA("TextLabel") or v:IsA("TextButton") then
+			local t = txt(v)
+			if #t > 0 and #t < 40 then
+				if parseFull(t) then
+					if guiVisible(v) then fullVis = v break end
+					fullAny = fullAny or v
+				else
+					local u = trim(t:upper())
+					if u == "WAVE" then
+						words[#words + 1] = v
+					elseif u:match("^%d+%s*/%s*%d+$") then
+						ratios[#ratios + 1] = v
+					end
+				end
 			end
 		end
 	end
-	if waveLbl then
-		if not guiVisible(waveLbl) then return 0 end
-		return tonumber(waveLbl.Text:upper():match("WAVE%s*(%d+)"))
+	if fullVis then return { obj = fullVis, mode = "full" } end
+	if fullAny then return { obj = fullAny, mode = "full" } end
+	-- label terpisah: "WAVE" dan "4/30"
+	for _, w in ipairs(words) do
+		local best, bd
+		for _, r in ipairs(ratios) do
+			local d = (center(w) - center(r)).Magnitude
+			if not bd or d < bd then best, bd = r, d end
+		end
+		if best and bd < 400 then return { obj = best, mode = "ratio" } end
 	end
 	return nil
 end
 
-local speedPairs, nextSpeedScan = nil, 0
-local function findSpeedBtn(scope, except)
-	if not scope then return nil end
-	for _, d in ipairs(scope:GetDescendants()) do
-		if (d:IsA("TextLabel") or d:IsA("TextButton")) and d ~= except and d.Text:match("^%s*[%d%.]+%s*[xX]%s*$") then
-			return d
+local function getWave()
+	if not waveSrc or not waveSrc.obj.Parent then
+		waveSrc = nil
+		if os.clock() < nextWaveScan then return nil end
+		nextWaveScan = os.clock() + 4
+		waveSrc = scanWave()
+		if waveSrc then
+			log("Label WAVE ditemukan: " .. waveSrc.obj:GetFullName():sub(-45))
 		end
 	end
+	if not waveSrc then return nil end
+	local o = waveSrc.obj
+	if not guiVisible(o) then return 0 end
+	local t = txt(o)
+	if waveSrc.mode == "full" then return parseFull(t) or 0 end
+	local a = t:match("^%s*(%d+)%s*/")
+	return a and tonumber(a) or 0
 end
-local function buildSpeedPairs()
-	speedPairs = {}
+
+-- ---- SPEED
+local speedPairs, nextSpeedScan = nil, 0
+
+local function scanSpeed()
 	local pg = LP:FindFirstChild("PlayerGui")
-	if not pg then return end
+	if not pg then return {}, {}, {} end
+	local labels, statuses = {}, {}
 	for _, v in ipairs(pg:GetDescendants()) do
-		if v:IsA("TextLabel") then
-			local t = v.Text:upper()
-			if t == "ACTIVE" or t == "NORMAL" or t == "GET PASS" then
-				local b = findSpeedBtn(v.Parent, v) or findSpeedBtn(v.Parent and v.Parent.Parent, v)
-				if b then table.insert(speedPairs, { status = v, btn = b }) end
+		if v:IsA("TextLabel") or v:IsA("TextButton") then
+			local t = txt(v)
+			if #t > 0 and #t < 16 then
+				local u = trim(t:upper())
+				if u == "ACTIVE" or u == "NORMAL" or u == "GET PASS" then
+					statuses[#statuses + 1] = v
+				else
+					local n = u:match("^([%d%.]+)%s*X$")
+					n = n and tonumber(n)
+					if n and n >= 0.5 and n <= 10 then
+						labels[#labels + 1] = { o = v, n = n }
+					end
+				end
 			end
 		end
 	end
+	-- pasangkan tiap status dengan tombol kecepatan TERDEKAT di layar
+	local prs = {}
+	for _, s in ipairs(statuses) do
+		local best, bd
+		for _, l in ipairs(labels) do
+			local d = (center(s) - center(l.o)).Magnitude
+			if not bd or d < bd then best, bd = l, d end
+		end
+		if best and bd < 250 then
+			prs[#prs + 1] = { status = s, label = best.o, n = best.n }
+		end
+	end
+	return prs, labels, statuses
 end
+
 local function detectSpeed()
 	if speedPairs then
 		for _, p in ipairs(speedPairs) do
-			if not p.status.Parent then speedPairs = nil break end
+			if not p.status.Parent or not p.label.Parent then speedPairs = nil break end
 		end
 	end
 	if not speedPairs or (#speedPairs == 0 and os.clock() > nextSpeedScan) then
 		nextSpeedScan = os.clock() + 5
-		buildSpeedPairs()
+		speedPairs = scanSpeed()
 	end
 	for _, p in ipairs(speedPairs) do
-		if p.status.Text:upper() == "ACTIVE" then
-			return tonumber(p.btn.Text:match("([%d%.]+)"))
+		if guiVisible(p.status) and trim(txt(p.status):upper()) == "ACTIVE" then
+			return p.n
 		end
 	end
 	return nil
+end
+
+-- ---- DIAGNOSA (hasil tampil di tab Log)
+local function diag()
+	log("=== DIAGNOSA WAVE / SPEED ===")
+	local pg = LP:FindFirstChild("PlayerGui")
+	if not pg then log("PlayerGui tidak ada") return end
+
+	local w = getWave()
+	if waveSrc and waveSrc.obj.Parent then
+		log(("Wave: '%s' [%s] -> W%s"):format(txt(waveSrc.obj):sub(1, 30), waveSrc.obj:GetFullName():sub(-35), tostring(w)))
+	else
+		log("Wave: label belum ketemu. Teks yang mengandung 'WAVE':")
+		local c = 0
+		for _, v in ipairs(pg:GetDescendants()) do
+			if v:IsA("TextLabel") or v:IsA("TextButton") then
+				local t = txt(v)
+				if t:upper():find("WAVE", 1, true) then
+					c += 1
+					log(("  '%s' [%s] tampil=%s"):format(t:sub(1, 30), v:GetFullName():sub(-35), tostring(guiVisible(v))))
+					if c >= 5 then break end
+				end
+			end
+		end
+		if c == 0 then log("  tidak ada teks 'WAVE' di PlayerGui") end
+	end
+
+	local prs, labels, statuses = scanSpeed()
+	log(("Speed: %d tombol, %d status, %d pasangan"):format(#labels, #statuses, #prs))
+	for _, p in ipairs(prs) do
+		log(("  x%s -> status '%s' tampil=%s"):format(tostring(p.n), txt(p.status):sub(1, 12), tostring(guiVisible(p.status))))
+	end
+	log(("Terbaca: x%s | mode manual: %s | dipakai: x%s"):format(
+		tostring(detectSpeed()), (S.spdMode or 0) > 0 and ("x" .. S.spdMode) or "auto", tostring(curSpeed)))
 end
 
 ------------------------------------------------------------------ TRACKER WAVE / SPEED
@@ -710,10 +816,16 @@ task.spawn(function()
 		pcall(function()
 			-- speed game (tiap ~0.3 detik)
 			if n % 3 == 0 then
-				local sp = detectSpeed()
+				local sp
+				if (S.spdMode or 0) > 0 then
+					sp = S.spdMode
+				else
+					sp = detectSpeed()
+				end
+				speedSeen = (sp ~= nil)
 				if sp and sp >= 0.5 and sp <= 10 and math.abs(sp - curSpeed) > 0.001 then
 					curSpeed = sp
-					log(("Speed game terdeteksi: x%s"):format(tostring(sp)))
+					log(("Speed game: x%s%s"):format(tostring(sp), (S.spdMode or 0) > 0 and " (manual)" or ""))
 				end
 			end
 
@@ -1223,7 +1335,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -36, 0, 30)
 title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 title.BorderSizePixel = 0
-title.Text = "  Tower Macro v3.6"
+title.Text = "  Tower Macro v3.7"
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
 title.Font = Enum.Font.GothamBold
@@ -1272,14 +1384,16 @@ local refreshToggles, playSlotLabel
 local pm = pages.Makro
 cashLabel = mkLabel(pm, "Cash: ?", UDim2.new(0, 0, 0, 0), UDim2.new(0.4, 0, 0, 16), nil, Color3.fromRGB(120, 255, 140))
 countLabel = mkLabel(pm, "P:0 U:0 S:0 A:0", UDim2.new(0.4, 0, 0, 0), UDim2.new(0.6, 0, 0, 16), Enum.TextXAlignment.Right, Color3.fromRGB(200, 200, 255))
-local infoLabel = mkLabel(pm, "W0  +0s  x1", UDim2.new(0, 0, 0, 16), UDim2.new(1, 0, 0, 16), nil, Color3.fromRGB(255, 220, 130))
+local infoLabel = mkLabel(pm, "W0  +0s  x1", UDim2.new(0, 0, 0, 16), UDim2.new(0.64, 0, 0, 16), nil, Color3.fromRGB(255, 220, 130))
 infoLabel.Font = Enum.Font.Code
 infoLabel.TextSize = 11
-local recBtn = mkBtn(pm, "Record", UDim2.new(0, 0, 0, 34), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(190, 50, 50))
-local playBtn = mkBtn(pm, "Play", UDim2.new(0.5, 3, 0, 34), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(50, 150, 70))
+local spdBtn = mkBtn(pm, "Spd: Auto", UDim2.new(0.66, 0, 0, 17), UDim2.new(0.34, 0, 0, 15), Color3.fromRGB(80, 70, 110))
+spdBtn.TextSize = 10
+local recBtn = mkBtn(pm, "Record", UDim2.new(0, 0, 0, 36), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(190, 50, 50))
+local playBtn = mkBtn(pm, "Play", UDim2.new(0.5, 3, 0, 36), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(50, 150, 70))
 
 local nameBox = Instance.new("TextBox")
-nameBox.Position = UDim2.new(0, 0, 0, 66)
+nameBox.Position = UDim2.new(0, 0, 0, 68)
 nameBox.Size = UDim2.new(1, 0, 0, 24)
 nameBox.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 nameBox.BorderSizePixel = 0
@@ -1293,13 +1407,13 @@ nameBox.ClearTextOnFocus = false
 nameBox.Parent = pm
 Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
 
-local saveBtn = mkBtn(pm, "Save", UDim2.new(0, 0, 0, 94), UDim2.new(1 / 3, -3, 0, 24), Color3.fromRGB(50, 110, 170))
-local loadBtn = mkBtn(pm, "Load", UDim2.new(1 / 3, 1, 0, 94), UDim2.new(1 / 3, -3, 0, 24), Color3.fromRGB(110, 90, 170))
-local delBtn = mkBtn(pm, "Hapus", UDim2.new(2 / 3, 2, 0, 94), UDim2.new(1 / 3, -2, 0, 24), Color3.fromRGB(150, 70, 70))
+local saveBtn = mkBtn(pm, "Save", UDim2.new(0, 0, 0, 96), UDim2.new(1 / 3, -3, 0, 24), Color3.fromRGB(50, 110, 170))
+local loadBtn = mkBtn(pm, "Load", UDim2.new(1 / 3, 1, 0, 96), UDim2.new(1 / 3, -3, 0, 24), Color3.fromRGB(110, 90, 170))
+local delBtn = mkBtn(pm, "Hapus", UDim2.new(2 / 3, 2, 0, 96), UDim2.new(1 / 3, -2, 0, 24), Color3.fromRGB(150, 70, 70))
 
 local slotList = Instance.new("ScrollingFrame")
-slotList.Position = UDim2.new(0, 0, 0, 122)
-slotList.Size = UDim2.new(1, 0, 1, -122)
+slotList.Position = UDim2.new(0, 0, 0, 124)
+slotList.Size = UDim2.new(1, 0, 1, -124)
 slotList.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
 slotList.BorderSizePixel = 0
 slotList.ScrollBarThickness = 4
@@ -1382,6 +1496,23 @@ delBtn.MouseButton1Click:Connect(function()
 	log(("HAPUS '%s'."):format(n))
 end)
 
+-- tombol speed manual
+local SPD_CYCLE = { 0, 1, 1.5, 2 }
+local function refreshSpd()
+	local m = S.spdMode or 0
+	spdBtn.Text = (m > 0) and ("Spd: x" .. tostring(m)) or "Spd: Auto"
+	spdBtn.BackgroundColor3 = (m > 0) and Color3.fromRGB(150, 110, 40) or Color3.fromRGB(80, 70, 110)
+end
+spdBtn.MouseButton1Click:Connect(function()
+	local idx = 1
+	for i, v in ipairs(SPD_CYCLE) do
+		if v == (S.spdMode or 0) then idx = i end
+	end
+	S.spdMode = SPD_CYCLE[idx % #SPD_CYCLE + 1]
+	saveSettings(); refreshSpd()
+	log("Speed makro: " .. ((S.spdMode > 0) and ("manual x" .. tostring(S.spdMode)) or "otomatis (baca dari layar)"))
+end)
+
 -- Auto page (scrollable)
 local pa = Instance.new("ScrollingFrame")
 pa.BackgroundTransparency = 1
@@ -1446,8 +1577,16 @@ pickLabel.Font = Enum.Font.Gotham
 pickLabel.TextSize = 11
 pickLabel.LayoutOrder = nextLO()
 
-local hint = mkLabel(pa, "Makro mengikuti wave & waktu game (otomatis menyesuaikan speed). Pengaturan tersimpan otomatis. Taruh skrip di folder autoexecute Delta agar Auto Play & Auto Replay jalan setelah rejoin.",
-	UDim2.new(), UDim2.new(1, -8, 0, 70), nil, Color3.fromRGB(150, 150, 165))
+local diagBtn = mkBtn(pa, "Diagnosa Wave / Speed (hasil di Log)", UDim2.new(), UDim2.new(1, -8, 0, 26), Color3.fromRGB(60, 90, 110))
+diagBtn.TextSize = 11
+diagBtn.LayoutOrder = nextLO()
+diagBtn.MouseButton1Click:Connect(function()
+	showTab("Log")
+	task.spawn(function() pcall(diag) end)
+end)
+
+local hint = mkLabel(pa, "Makro mengikuti wave & waktu game (otomatis menyesuaikan speed). Kalau speed salah terbaca, atur manual lewat tombol Spd di tab Makro. Taruh skrip di folder autoexecute Delta agar Auto Play & Auto Replay jalan setelah rejoin.",
+	UDim2.new(), UDim2.new(1, -8, 0, 84), nil, Color3.fromRGB(150, 150, 165))
 hint.Font = Enum.Font.Gotham
 hint.TextSize = 10
 hint.TextWrapped = true
@@ -1546,7 +1685,10 @@ recBtn.MouseButton1Click:Connect(function()
 			log("PERINGATAN: Record dimulai di tengah wave, awal wave hanya perkiraan. Untuk akurat, Record sebelum wave 1.")
 		end
 		if not waveSeen then
-			log("PERINGATAN: label WAVE belum ditemukan, timing memakai waktu total.")
+			log("PERINGATAN: label WAVE belum terbaca. Tekan Diagnosa di tab Auto.")
+		end
+		if not speedSeen then
+			log("PERINGATAN: speed belum terbaca. Atur manual lewat tombol Spd di tab Makro.")
 		end
 	end
 	refreshUI()
@@ -1597,8 +1739,9 @@ end)
 task.spawn(function()
 	while alive do
 		cashLabel.Text = "Cash: " .. fmt(getCash())
-		infoLabel.Text = ("W%d  +%.0fs  x%s%s"):format(
-			curWave, math.max(0, gt - waveStartGT), tostring(curSpeed), waveSeen and "" or "  (wave?)")
+		infoLabel.Text = ("W%d  +%.0fs  x%s%s%s"):format(
+			curWave, math.max(0, gt - waveStartGT), tostring(curSpeed),
+			speedSeen and "" or "?", waveSeen and "" or " (wave?)")
 		task.wait(0.5)
 	end
 end)
@@ -1664,6 +1807,7 @@ if sv then
 	S.playSlot = type(sv.playSlot) == "string" and sv.playSlot or nil
 	S.autoVote = sv.autoVote == true
 	S.autoReplay = sv.autoReplay == true
+	S.spdMode = tonumber(sv.spdMode) or 0
 	for _, d in ipairs(DIFFS) do
 		if sv.difficulty == d then S.difficulty = d end
 	end
@@ -1683,6 +1827,7 @@ refreshCount()
 refreshSlotList()
 refreshToggles()
 refreshUI()
+refreshSpd()
 
 local hooked = installHook()
 log("Hook: " .. (hooked and "aktif" or "GAGAL"))
