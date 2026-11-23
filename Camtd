@@ -1,7 +1,8 @@
 --[[
-  Tower Macro v3.4 - Delta Mobile
-  Record/Play (place, upgrade, sell, ability) + Save Slot + Auto Speed + Auto Start
+  Tower Macro v3.5 - Delta Mobile
+  Record/Play (place, upgrade, sell, ability) + Save Slot + Auto Speed + Auto Start (jeda 5 detik)
   + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay + Auto Pickup (jalan ke item)
+  UI otomatis minimize saat pertama di-execute
 ]]
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -30,6 +31,7 @@ local CFG = {
 	MATCH_DIST = 6,
 	AUTOPLAY_DELAY = 3,
 	REPLAY_DELAY = 3,
+	START_DELAY = 5, -- jeda (detik) sebelum Auto Start mengirim ReadyUp
 	RESULT_TEXTS = {
 		["VICTORY"] = true, ["DEFEAT"] = true, ["GAME OVER"] = true,
 		["YOU WIN"] = true, ["YOU LOSE"] = true,
@@ -705,18 +707,31 @@ task.spawn(function()
 	end
 end)
 
------------------------------------------------------------------- AUTO START
+------------------------------------------------------------------ AUTO START (jeda 5 detik)
 local lastReady = -1e9
+local startWaitFrom = nil -- kapan hitung mundur jeda dimulai
 task.spawn(function()
 	while alive do
 		task.wait(1)
 		if S.autoStart then
 			pcall(function()
 				local w = getWave()
+				local inLobby = (w == nil or w == 0)
+				if not inLobby then startWaitFrom = nil return end
+
+				-- hitung mundur jeda sebelum ReadyUp pertama
+				if not startWaitFrom then
+					startWaitFrom = os.clock()
+					log(("AUTO START: menunggu %d detik sebelum ReadyUp..."):format(CFG.START_DELAY))
+				end
+				if os.clock() - startWaitFrom < CFG.START_DELAY then return end
+
+				-- tunggu vote dulu kalau Auto Vote aktif
 				if S.autoVote and voteTries == 0 then return end
 				if S.autoVote and voteTries < 99 and os.clock() - lastVote < 3 then return end
+
 				local gap = (w == nil) and 30 or 6
-				if (w == nil or w == 0) and os.clock() - lastReady > gap then
+				if os.clock() - lastReady > gap then
 					local ev = eventByName("ReadyUp")
 					if ev then
 						ev:FireServer()
@@ -725,6 +740,8 @@ task.spawn(function()
 					end
 				end
 			end)
+		else
+			startWaitFrom = nil
 		end
 	end
 end)
@@ -795,9 +812,9 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------ AUTO PICKUP (karakter jalan ke item)
-local openDrops = {}              -- id -> {name, born, n, inst, scanned, failed}
-local assigned = {}               -- inst -> true (sudah dipakai drop lain)
-local recentAdds = {}             -- {inst, t}
+local openDrops = {}
+local assigned = {}
+local recentAdds = {}
 local pickStat = { ok = 0, fail = 0 }
 local itemConns, itemConnected = {}, {}
 local pickLabel, wsConn
@@ -981,7 +998,6 @@ task.spawn(function()
 		local ids = {}
 		for id in pairs(openDrops) do ids[#ids + 1] = id end
 
-		-- kadaluarsa
 		for _, id in ipairs(ids) do
 			local t = openDrops[id]
 			if t and now - t.born > PK.MAX_AGE then
@@ -994,7 +1010,6 @@ task.spawn(function()
 		if S.autoPickup then
 			local h, r = getHum()
 			if h then
-				-- cari item terdekat yang bisa didatangi
 				local bestId, bestT, bestD
 				ids = {}
 				for id in pairs(openDrops) do ids[#ids + 1] = id end
@@ -1019,7 +1034,6 @@ task.spawn(function()
 					t.n += 1
 					log(("AUTO PICKUP: jalan ke %s (%d studs)"):format(t.name, bestD))
 					if t.n > 1 then
-						-- sudah pernah sampai tapi belum terclaim: goyang sedikit
 						local h2, r2 = getHum()
 						if h2 then
 							h2.Jump = true
@@ -1109,7 +1123,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -36, 0, 30)
 title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 title.BorderSizePixel = 0
-title.Text = "  Tower Macro v3.4"
+title.Text = "  Tower Macro v3.5"
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
 title.Font = Enum.Font.GothamBold
@@ -1383,8 +1397,9 @@ end)
 tStart.MouseButton1Click:Connect(function()
 	S.autoStart = not S.autoStart
 	lastReady = -1e9
+	startWaitFrom = nil
 	saveSettings(); refreshToggles()
-	log("Auto Start: " .. (S.autoStart and "ON" or "OFF"))
+	log("Auto Start: " .. (S.autoStart and ("ON (jeda " .. CFG.START_DELAY .. " detik)") or "OFF"))
 end)
 tPick.MouseButton1Click:Connect(function()
 	S.autoPickup = not S.autoPickup
@@ -1437,14 +1452,17 @@ playBtn.MouseButton1Click:Connect(function()
 	refreshUI()
 end)
 
+-- minimize
 local minimized = false
-minBtn.MouseButton1Click:Connect(function()
-	minimized = not minimized
-	body.Visible = not minimized
-	frame.Size = minimized and UDim2.fromOffset(130, 30) or FULL
-	title.Size = minimized and UDim2.new(1, -32, 0, 30) or UDim2.new(1, -36, 0, 30)
-	minBtn.Text = minimized and "+" or "-"
-end)
+local function setMinimized(v)
+	minimized = v
+	body.Visible = not v
+	frame.Size = v and UDim2.fromOffset(130, 30) or FULL
+	title.Size = v and UDim2.new(1, -32, 0, 30) or UDim2.new(1, -36, 0, 30)
+	minBtn.Text = v and "+" or "-"
+end
+minBtn.MouseButton1Click:Connect(function() setMinimized(not minimized) end)
+setMinimized(true) -- otomatis minimize saat pertama kali di-execute
 
 local dragging, dragStart, startPos
 title.InputBegan:Connect(function(i)
