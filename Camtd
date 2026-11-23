@@ -1,17 +1,19 @@
 --[[
-  Tower Macro v3.3 - Delta Mobile
-  Record/Play (place, upgrade, sell) + Save Slot + Auto Speed + Auto Start
-  + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay + Auto Pickup (Drop/Taken)
+  Tower Macro v3.4 - Delta Mobile
+  Record/Play (place, upgrade, sell, ability) + Save Slot + Auto Speed + Auto Start
+  + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay + Auto Pickup (jalan ke item)
 ]]
 
 if not game:IsLoaded() then game.Loaded:Wait() end
 if getgenv and getgenv().TMacro_Destroy then pcall(getgenv().TMacro_Destroy) end
 local G = getgenv()
+G.TMacro_Handler2 = nil -- matikan handler versi lama
 
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
 local UIS = game:GetService("UserInputService")
+local PathfindingService = game:GetService("PathfindingService")
 local LP = Players.LocalPlayer
 while not LP do task.wait(0.1) LP = Players.LocalPlayer end
 
@@ -39,15 +41,21 @@ local CFG = {
 
 -- pengaturan pickup (boleh diubah)
 local PK = {
-	DELAY = 0.8,   -- jeda setelah item muncul sebelum diambil
-	RETRY = 1.2,   -- jarak antar percobaan
-	MAX_AGE = 90,  -- detik, lewat ini item dianggap gagal
-	MAX_TRY = 40,
+	REACH = 2,          -- jarak (studs) dianggap sudah sampai di item
+	MAX_AGE = 60,       -- detik, item lebih lama dari ini dianggap gagal
+	FIND_TIMEOUT = 8,   -- detik mencari item fisik di workspace
+	MAX_TRY = 4,        -- percobaan datangi item yang sama
+	WALK_TIMEOUT = 25,  -- detik maksimal sekali jalan
 }
 
 local DIFFS = { "Easy", "Medium", "Hard", "Nightmare" }
 
-local TRACK = { RequestPlacement = "place", RequestTowerUpgrade = "upgrade", RequestTowerSell = "sell" }
+local TRACK = {
+	RequestPlacement = "place",
+	RequestTowerUpgrade = "upgrade",
+	RequestTowerSell = "sell",
+	UpdateAbilityAutoUse = "ability",
+}
 local REMOTE_OF = { place = "RequestPlacement", upgrade = "RequestTowerUpgrade", sell = "RequestTowerSell" }
 
 local alive = true
@@ -251,11 +259,14 @@ end
 local countLabel
 local function refreshCount()
 	if not countLabel then return end
-	local p, u, s = 0, 0, 0
+	local p, u, s, ab = 0, 0, 0, 0
 	for _, a in ipairs(macro) do
-		if a.type == "place" then p += 1 elseif a.type == "upgrade" then u += 1 elseif a.type == "sell" then s += 1 end
+		if a.type == "place" then p += 1
+		elseif a.type == "upgrade" then u += 1
+		elseif a.type == "sell" then s += 1
+		elseif a.type == "ability" then ab += 1 end
 	end
-	countLabel.Text = ("P:%d U:%d S:%d"):format(p, u, s)
+	countLabel.Text = ("P:%d U:%d S:%d A:%d"):format(p, u, s, ab)
 end
 
 ------------------------------------------------------------------ RECORD
@@ -315,6 +326,25 @@ local function resolve(X)
 end
 
 local function handleRecorded(kind, seq, args, ret, cashBefore, countBefore, snap)
+	-- ABILITY (FireServer: towerId, abilityName)
+	if kind == "ability" then
+		local X, ab = args[1], args[2]
+		log(("TANGKAP ability %s"):format(tostring(ab)))
+		local entry = false
+		local pid, kd = resolve(X)
+		if pid then
+			local pe = liveById[pid]
+			if pe and not pe.keyKind then pe.keyKind = kd end
+			entry = { type = "ability", id = pid, name = nameById[pid], ability = tostring(ab) }
+			log(("REC ability '%s' -> %s"):format(tostring(ab), tostring(nameById[pid])))
+		else
+			log(("DILEWATI ability %s: tower tidak dikenal id=%s"):format(tostring(ab), tostring(X)))
+		end
+		pending[seq] = entry
+		flush()
+		return
+	end
+
 	log(("TANGKAP %s ret=%s cash=%s"):format(kind, tostring(ret), fmt(cashBefore)))
 	local ok = verifyAction(kind, ret, cashBefore, countBefore)
 	local entry = false
@@ -372,7 +402,7 @@ local function handleRecorded(kind, seq, args, ret, cashBefore, countBefore, sna
 end
 
 -- Handler jalan di thread game: HANYA ambil data & masukkan ke antrean
-G.TMacro_Handler2 = function(self, method, call, ...)
+G.TMacro_Handler3 = function(self, method, call, ...)
 	if not alive or mode ~= "record" then return call(...) end
 	local kind = TRACK[self.Name]
 	if not kind then return call(...) end
@@ -407,7 +437,8 @@ task.spawn(function()
 end)
 
 local function installHook()
-	if G.TMacro_HookJob == game.JobId and G.TMacro_HookJob ~= nil then return true end
+	local key = "4:" .. tostring(game.JobId)
+	if G.TMacro_HookKey == key then return true end
 	if not (hookmetamethod and getnamecallmethod) then
 		log("ERROR: executor tidak support hookmetamethod")
 		return false
@@ -415,8 +446,9 @@ local function installHook()
 	local old
 	old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
 		local method = getnamecallmethod()
-		if method == "InvokeServer" and typeof(self) == "Instance" and not checkcaller() then
-			local h = G.TMacro_Handler2
+		if (method == "InvokeServer" or method == "FireServer")
+			and typeof(self) == "Instance" and TRACK[self.Name] and not checkcaller() then
+			local h = G.TMacro_Handler3
 			if h then
 				local s, m = self, method
 				local call = function(...)
@@ -428,7 +460,7 @@ local function installHook()
 		end
 		return old(self, ...)
 	end))
-	G.TMacro_HookJob = game.JobId
+	G.TMacro_HookKey = key
 	return true
 end
 
@@ -450,6 +482,14 @@ local function targetFor(pid)
 end
 
 local function doAction(a)
+	if a.type == "ability" then
+		local ev = eventByName("UpdateAbilityAutoUse")
+		local target = targetFor(a.id)
+		if not ev or not target then return false end
+		task.wait(0.3)
+		return (pcall(function() ev:FireServer(target, a.ability) end))
+	end
+
 	local remote = remoteByName(REMOTE_OF[a.type])
 	if not remote then return false end
 	local cashBefore, countBefore, snap = getCash(), towerCount(), snapshot()
@@ -503,7 +543,11 @@ local function playMacro()
 					end
 					task.wait(0.2)
 				elseif doAction(a) then
-					log(("[%d/%d] OK %s %s cash=%s"):format(i, #macro, a.type, tostring(a.name), fmt(getCash())))
+					if a.type == "ability" then
+						log(("[%d/%d] OK ability '%s' %s"):format(i, #macro, tostring(a.ability), tostring(a.name)))
+					else
+						log(("[%d/%d] OK %s %s cash=%s"):format(i, #macro, a.type, tostring(a.name), fmt(getCash())))
+					end
 					if a.type == "sell" then idMap[a.id] = nil end
 					break
 				else
@@ -750,23 +794,95 @@ task.spawn(function()
 	end
 end)
 
------------------------------------------------------------------- AUTO PICKUP (event ItemDrop: "Drop" -> "Taken")
-local openDrops = {}              -- id -> {name, born, last, n}
+------------------------------------------------------------------ AUTO PICKUP (karakter jalan ke item)
+local openDrops = {}              -- id -> {name, born, n, inst, scanned, failed}
+local assigned = {}               -- inst -> true (sudah dipakai drop lain)
+local recentAdds = {}             -- {inst, t}
 local pickStat = { ok = 0, fail = 0 }
 local itemConns, itemConnected = {}, {}
-local pickLabel
+local pickLabel, wsConn
+
+local function posOf(inst)
+	if inst:IsA("BasePart") then return inst.Position end
+	if inst:IsA("Model") then return getPos(inst) end
+end
+
+local function isIgnored(inst)
+	local cam = workspace.CurrentCamera
+	if cam and inst:IsDescendantOf(cam) then return true end
+	for _, pl in ipairs(Players:GetPlayers()) do
+		local c = pl.Character
+		if c and inst:IsDescendantOf(c) then return true end
+	end
+	local tf = getFolder()
+	if tf and inst:IsDescendantOf(tf) then return true end
+	return false
+end
+
+local function onWsAdded(inst)
+	if not alive then return end
+	if inst:IsA("BasePart") or inst:IsA("Model") then
+		recentAdds[#recentAdds + 1] = { inst = inst, t = os.clock() }
+		if #recentAdds > 400 then table.remove(recentAdds, 1) end
+	end
+end
+
+local function findRecent(t)
+	for i = #recentAdds, 1, -1 do
+		local e = recentAdds[i]
+		if e.t < t.born - 3 then break end
+		local inst = e.inst
+		if e.t <= t.born + 4 and inst.Parent and inst.Name == t.name
+			and not assigned[inst] and not isIgnored(inst) then
+			return inst
+		end
+	end
+end
+
+local function scanWorkspace(t)
+	local cands = {}
+	local list = workspace:GetDescendants()
+	for i, d in ipairs(list) do
+		local cand
+		if d.Name == t.name and (d:IsA("BasePart") or d:IsA("Model")) then
+			cand = d
+		elseif d:IsA("TextLabel") and d.Text == t.name then
+			local bb = d:FindFirstAncestorWhichIsA("BillboardGui")
+			local ad = bb and (bb.Adornee or bb.Parent)
+			if ad and (ad:IsA("BasePart") or ad:IsA("Model")) then cand = ad end
+		end
+		if cand and not assigned[cand] and not isIgnored(cand) and posOf(cand) then
+			cands[#cands + 1] = cand
+			if #cands >= 6 then break end
+		end
+		if i % 4000 == 0 then task.wait() end
+	end
+	for _, c in ipairs(cands) do
+		local ok, tt = pcall(function() return c:FindFirstChildWhichIsA("TouchTransmitter", true) end)
+		if ok and tt then return c end
+	end
+	return cands[1]
+end
+
+local function markFail(t, why)
+	if t.failed then return end
+	t.failed = true
+	pickStat.fail += 1
+	log(("PICKUP GAGAL: %s (%s)"):format(t.name, why))
+end
 
 local function onItemEvent(tag, id, name)
 	if not alive or type(id) ~= "string" then return end
 	if tag == "Drop" then
 		if not openDrops[id] then
-			openDrops[id] = { name = tostring(name), born = os.clock(), last = 0, n = 0 }
+			openDrops[id] = { name = tostring(name), born = os.clock(), n = 0 }
 		end
 	elseif tag == "Taken" then
 		local t = openDrops[id]
 		if t then
 			openDrops[id] = nil
-			if t.n > 0 then
+			if t.inst then assigned[t.inst] = nil end
+			if t.n > 0 and not t.failed then
 				pickStat.ok += 1
 				log(("PICKUP OK: %s (%d percobaan)"):format(t.name, t.n))
 			end
@@ -783,35 +899,156 @@ local function connectItem(ev)
 	if ok and c then table.insert(itemConns, c) end
 end
 
+local function getHum()
+	local c = LP.Character
+	local h = c and c:FindFirstChildOfClass("Humanoid")
+	local r = c and c:FindFirstChild("HumanoidRootPart")
+	if h and r and h.Health > 0 then return h, r end
+end
+
+local function followPath(h, r, p, isDone)
+	local ok, path = pcall(function()
+		return PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true })
+	end)
+	if not ok or not path then return end
+	local okc = pcall(function() path:ComputeAsync(r.Position, p) end)
+	if not okc or path.Status ~= Enum.PathStatus.Success then return end
+	for _, wp in ipairs(path:GetWaypoints()) do
+		if not alive or not S.autoPickup or isDone() then return end
+		if wp.Action == Enum.PathWaypointAction.Jump then h.Jump = true end
+		local fin = false
+		local c = h.MoveToFinished:Connect(function() fin = true end)
+		h:MoveTo(wp.Position)
+		local t = os.clock()
+		while not fin and os.clock() - t < 2 and alive and not isDone() do task.wait(0.05) end
+		c:Disconnect()
+	end
+end
+
+local function walkTo(getTarget, isDone, timeout)
+	local t0 = os.clock()
+	local h, r = getHum()
+	if not h then return false end
+	local lastPos, lastMove = r.Position, os.clock()
+	local pathTried = 0
+	while alive and S.autoPickup and os.clock() - t0 < timeout do
+		if isDone() then return true end
+		h, r = getHum()
+		if not h then return false end
+		local p = getTarget()
+		if not p then return false end
+		local dx, dz = p.X - r.Position.X, p.Z - r.Position.Z
+		if math.sqrt(dx * dx + dz * dz) < PK.REACH and math.abs(p.Y - r.Position.Y) < 10 then return true end
+		h:MoveTo(p)
+		if (r.Position - lastPos).Magnitude > 0.8 then
+			lastPos, lastMove = r.Position, os.clock()
+		elseif os.clock() - lastMove > 1.2 then
+			h.Jump = true
+			if os.clock() - lastMove > 2.5 and pathTried < 3 then
+				pathTried += 1
+				followPath(h, r, p, isDone)
+				lastPos, lastMove = r.Position, os.clock()
+			end
+		end
+		task.wait(0.15)
+	end
+	return false
+end
+
+local function resolveItem(t)
+	if t.inst and t.inst.Parent then return t.inst end
+	if t.inst then assigned[t.inst] = nil t.inst = nil end
+	local i = findRecent(t)
+	if not i and not t.scanned and os.clock() - t.born > 1.2 then
+		t.scanned = true
+		i = scanWorkspace(t)
+	end
+	if i then
+		t.inst = i
+		assigned[i] = true
+		local p = posOf(i)
+		log(("Item ketemu: %s @ %s"):format(t.name, i:GetFullName():sub(-40)))
+		if not p then t.inst = nil assigned[i] = nil end
+	end
+	return t.inst
+end
+
 task.spawn(function()
 	while alive do
-		task.wait(0.25)
+		task.wait(0.3)
 		local now = os.clock()
-		local ids, waiting = {}, 0
+
+		local ids = {}
 		for id in pairs(openDrops) do ids[#ids + 1] = id end
+
+		-- kadaluarsa
 		for _, id in ipairs(ids) do
 			local t = openDrops[id]
-			if t then
-				if now - t.born > PK.MAX_AGE or t.n >= PK.MAX_TRY then
-					openDrops[id] = nil
-					if t.n > 0 then
-						pickStat.fail += 1
-						log(("PICKUP GAGAL: %s (%d percobaan)"):format(t.name, t.n))
-					end
-				else
-					waiting += 1
-					if S.autoPickup and now - t.born >= PK.DELAY and now - t.last >= PK.RETRY then
-						local ev = eventByName("ItemDrop")
-						if ev then
-							pcall(function() ev:FireServer("Pickup", id) end)
-							t.n += 1
-							t.last = os.clock()
-							if t.n == 1 then log("AUTO PICKUP: " .. t.name) end
-							task.wait(0.12)
+			if t and now - t.born > PK.MAX_AGE then
+				openDrops[id] = nil
+				if t.inst then assigned[t.inst] = nil end
+				if t.n > 0 then markFail(t, "kadaluarsa") end
+			end
+		end
+
+		if S.autoPickup then
+			local h, r = getHum()
+			if h then
+				-- cari item terdekat yang bisa didatangi
+				local bestId, bestT, bestD
+				ids = {}
+				for id in pairs(openDrops) do ids[#ids + 1] = id end
+				for _, id in ipairs(ids) do
+					local t = openDrops[id]
+					if t and not t.failed then
+						local inst = resolveItem(t)
+						if inst then
+							local p = posOf(inst)
+							if p then
+								local d = (p - r.Position).Magnitude
+								if not bestD or d < bestD then bestId, bestT, bestD = id, t, d end
+							end
+						elseif os.clock() - t.born > PK.FIND_TIMEOUT then
+							markFail(t, "item fisik tidak ketemu")
 						end
 					end
 				end
+
+				if bestT and openDrops[bestId] == bestT then
+					local t, id = bestT, bestId
+					t.n += 1
+					log(("AUTO PICKUP: jalan ke %s (%d studs)"):format(t.name, bestD))
+					if t.n > 1 then
+						-- sudah pernah sampai tapi belum terclaim: goyang sedikit
+						local h2, r2 = getHum()
+						if h2 then
+							h2.Jump = true
+							h2:MoveTo(r2.Position + Vector3.new(4, 0, 0))
+							task.wait(0.6)
+						end
+					end
+					walkTo(function()
+						local i = t.inst
+						return i and i.Parent and posOf(i) or nil
+					end, function() return openDrops[id] ~= t end, PK.WALK_TIMEOUT)
+
+					local w = os.clock()
+					while alive and openDrops[id] == t and os.clock() - w < 1.5 do task.wait(0.1) end
+					if openDrops[id] == t and t.n >= PK.MAX_TRY then
+						markFail(t, "tidak terclaim setelah " .. t.n .. " percobaan")
+					end
+				end
 			end
+		end
+	end
+end)
+
+task.spawn(function()
+	while alive do
+		task.wait(0.5)
+		local waiting = 0
+		for _, t in pairs(openDrops) do
+			if not t.failed then waiting += 1 end
 		end
 		if pickLabel then
 			pickLabel.Text = ("Pickup: ok %d | gagal %d | menunggu %d"):format(pickStat.ok, pickStat.fail, waiting)
@@ -872,7 +1109,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -36, 0, 30)
 title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 title.BorderSizePixel = 0
-title.Text = "  Tower Macro v3.3"
+title.Text = "  Tower Macro v3.4"
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
 title.Font = Enum.Font.GothamBold
@@ -919,8 +1156,8 @@ local refreshToggles, playSlotLabel
 
 -- Makro page
 local pm = pages.Makro
-cashLabel = mkLabel(pm, "Cash: ?", UDim2.new(0, 0, 0, 0), UDim2.new(0.5, 0, 0, 18), nil, Color3.fromRGB(120, 255, 140))
-countLabel = mkLabel(pm, "P:0 U:0 S:0", UDim2.new(0.5, 0, 0, 0), UDim2.new(0.5, 0, 0, 18), Enum.TextXAlignment.Right, Color3.fromRGB(200, 200, 255))
+cashLabel = mkLabel(pm, "Cash: ?", UDim2.new(0, 0, 0, 0), UDim2.new(0.4, 0, 0, 18), nil, Color3.fromRGB(120, 255, 140))
+countLabel = mkLabel(pm, "P:0 U:0 S:0 A:0", UDim2.new(0.4, 0, 0, 0), UDim2.new(0.6, 0, 0, 18), Enum.TextXAlignment.Right, Color3.fromRGB(200, 200, 255))
 local recBtn = mkBtn(pm, "Record", UDim2.new(0, 0, 0, 20), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(190, 50, 50))
 local playBtn = mkBtn(pm, "Play", UDim2.new(0.5, 3, 0, 20), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(50, 150, 70))
 
@@ -1111,7 +1348,7 @@ refreshToggles = function()
 	styleToggle(t15, "Auto Speed x1.5", S.speed == 1.5)
 	styleToggle(t2, "Auto Speed x2", S.speed == 2)
 	styleToggle(tStart, "Auto Start Match", S.autoStart)
-	styleToggle(tPick, "Auto Pickup Item", S.autoPickup)
+	styleToggle(tPick, "Auto Pickup (jalan)", S.autoPickup)
 end
 
 tPlay.MouseButton1Click:Connect(function()
@@ -1152,7 +1389,7 @@ end)
 tPick.MouseButton1Click:Connect(function()
 	S.autoPickup = not S.autoPickup
 	saveSettings(); refreshToggles()
-	log("Auto Pickup: " .. (S.autoPickup and "ON" or "OFF"))
+	log("Auto Pickup: " .. (S.autoPickup and "ON (karakter akan jalan ke item)" or "OFF"))
 end)
 
 -- Log page
@@ -1238,6 +1475,8 @@ G.TMacro_Destroy = function()
 	alive = false
 	mode = "idle"
 	G.TMacro_Handler2 = nil
+	G.TMacro_Handler3 = nil
+	if wsConn then pcall(function() wsConn:Disconnect() end) end
 	for _, c in ipairs(itemConns) do pcall(function() c:Disconnect() end) end
 	for _, c in ipairs(resultConns) do pcall(function() c:Disconnect() end) end
 	pcall(function() gui:Destroy() end)
@@ -1316,7 +1555,8 @@ local hooked = installHook()
 log("Hook: " .. (hooked and "aktif" or "GAGAL"))
 log(("Makro aktif: %d aksi | Slot tersimpan: %d"):format(#macro, (function() local c = 0 for _ in pairs(slots) do c += 1 end return c end)()))
 
--- dengarkan event ItemDrop (Drop / Taken)
+-- pantau item baru di workspace + event ItemDrop (Drop / Taken)
+wsConn = workspace.DescendantAdded:Connect(onWsAdded)
 task.spawn(function()
 	local r = RS:WaitForChild("Remotes", 30)
 	if not r or not alive then return end
