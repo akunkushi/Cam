@@ -6,9 +6,28 @@
   UI otomatis minimize saat pertama di-execute
 ]]
 
-if not game:IsLoaded() then pcall(function() game.Loaded:Wait() end) end
-if getgenv and getgenv().TMacro_Destroy then pcall(getgenv().TMacro_Destroy) end
-local G = (getgenv and getgenv()) or _G
+local function getEnvTable()
+	local ok, env = pcall(function()
+		if type(getgenv) == "function" then
+			return getgenv()
+		end
+	end)
+	if ok and type(env) == "table" then
+		return env
+	end
+	return _G
+end
+
+local G = getEnvTable()
+
+if not game:IsLoaded() then
+	pcall(function() game.Loaded:Wait() end)
+end
+
+if type(G.TMacro_Destroy) == "function" then
+	pcall(G.TMacro_Destroy)
+end
+
 G.TMacro_Handler2 = nil -- matikan handler versi lama
 G.TMacro_Handler3 = nil
 
@@ -19,7 +38,10 @@ local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local PathfindingService = game:GetService("PathfindingService")
 local LP = Players.LocalPlayer
-while not LP do task.wait(0.1) LP = Players.LocalPlayer end
+while not LP do
+	task.wait(0.1)
+	LP = Players.LocalPlayer
+end
 
 local CFG = {
 	CUR_FILE = "TowerMacro_v22.json",
@@ -156,10 +178,12 @@ end
 
 ------------------------------------------------------------------ FILES
 local function writeJson(file, data)
-	if writefile then pcall(function() writefile(file, HttpService:JSONEncode(data)) end) end
+	if type(writefile) == "function" then
+		pcall(function() writefile(file, HttpService:JSONEncode(data)) end)
+	end
 end
 local function readJson(file)
-	if isfile and readfile then
+	if type(isfile) == "function" and type(readfile) == "function" then
 		local okExists, exists = pcall(isfile, file)
 		if okExists and exists then
 			local okRead, raw = pcall(readfile, file)
@@ -729,30 +753,40 @@ end)
 local function installHook()
 	local key = "5:" .. tostring(game.JobId)
 	if G.TMacro_HookKey == key then return true end
-	if not (hookmetamethod and getnamecallmethod) then
+	if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then
 		log("ERROR: executor tidak support hookmetamethod")
 		return false
 	end
+	local wrapClosure = (type(newcclosure) == "function") and newcclosure or function(f) return f end
+	local checkCallerFn = (type(checkcaller) == "function") and checkcaller or function() return false end
+	local setNamecallFn = (type(setnamecallmethod) == "function") and setnamecallmethod or nil
+
 	local old
-	old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-		local method = getnamecallmethod()
-		if (method == "InvokeServer" or method == "FireServer")
-			and typeof(self) == "Instance" and not checkcaller() then
-			local n = self.Name
-			if TRACK[n] or (G.TMacro_Watching and not FOLLOW_IGNORE[n]) then
-				local h = G.TMacro_Handler4
-				if h then
-					local s, m = self, method
-					local call = function(...)
-						if setnamecallmethod then setnamecallmethod(m) end
-						return old(s, ...)
+	local okHook, errHook = pcall(function()
+		old = hookmetamethod(game, "__namecall", wrapClosure(function(self, ...)
+			local okM, method = pcall(getnamecallmethod)
+			if okM and (method == "InvokeServer" or method == "FireServer")
+				and typeof(self) == "Instance" and not checkCallerFn() then
+				local n = self.Name
+				if TRACK[n] or (G.TMacro_Watching and not FOLLOW_IGNORE[n]) then
+					local h = G.TMacro_Handler4
+					if type(h) == "function" then
+						local s, m = self, method
+						local call = function(...)
+							if setNamecallFn then pcall(setNamecallFn, m) end
+							return old(s, ...)
+						end
+						return h(self, m, call, ...)
 					end
-					return h(self, m, call, ...)
 				end
 			end
-		end
-		return old(self, ...)
-	end))
+			return old(self, ...)
+		end))
+	end)
+	if not okHook or type(old) ~= "function" then
+		log("ERROR hook: " .. tostring(errHook))
+		return false
+	end
 	G.TMacro_HookKey = key
 	return true
 end
@@ -1606,7 +1640,12 @@ end)
 ------------------------------------------------------------------ UI
 local function attachGui(guiObj)
 	local targets = {}
-	pcall(function() if gethui then table.insert(targets, gethui()) end end)
+	pcall(function()
+		if type(gethui) == "function" then
+			local h = gethui()
+			if h then table.insert(targets, h) end
+		end
+	end)
 	pcall(function() table.insert(targets, game:GetService("CoreGui")) end)
 	pcall(function() table.insert(targets, LP:WaitForChild("PlayerGui", 10)) end)
 
@@ -1627,7 +1666,11 @@ gui.Name = "TMacroUI"
 gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.DisplayOrder = 999999
-pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+pcall(function()
+	if type(syn) == "table" and type(syn.protect_gui) == "function" then
+		syn.protect_gui(gui)
+	end
+end)
 
 local FULL = UDim2.fromOffset(270, 300)
 local frame = Instance.new("Frame")
