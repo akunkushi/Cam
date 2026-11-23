@@ -6,9 +6,9 @@
   UI otomatis minimize saat pertama di-execute
 ]]
 
-if not game:IsLoaded() then game.Loaded:Wait() end
+if not game:IsLoaded() then pcall(function() game.Loaded:Wait() end) end
 if getgenv and getgenv().TMacro_Destroy then pcall(getgenv().TMacro_Destroy) end
-local G = getgenv()
+local G = (getgenv and getgenv()) or _G
 G.TMacro_Handler2 = nil -- matikan handler versi lama
 G.TMacro_Handler3 = nil
 
@@ -110,31 +110,33 @@ end)
 ------------------------------------------------------------------ LOG
 local logScroll, statusLabel
 local function log(msg)
-	print("[Macro] " .. msg)
-	if statusLabel then statusLabel.Text = msg end
-	if not logScroll then return end
-	local l = Instance.new("TextLabel")
-	l.BackgroundTransparency = 1
-	l.Size = UDim2.new(1, -6, 0, 0)
-	l.AutomaticSize = Enum.AutomaticSize.Y
-	l.TextWrapped = true
-	l.TextXAlignment = Enum.TextXAlignment.Left
-	l.Font = Enum.Font.Code
-	l.TextSize = 11
-	l.TextColor3 = Color3.fromRGB(220, 220, 220)
-	l.Text = msg
-	l.Parent = logScroll
-	local n = 0
-	for _, k in ipairs(logScroll:GetChildren()) do
-		if k:IsA("TextLabel") then n += 1 end
-	end
-	if n > CFG.MAX_LOG then
+	print("[Macro] " .. tostring(msg))
+	pcall(function()
+		if statusLabel then statusLabel.Text = tostring(msg) end
+		if not logScroll then return end
+		local l = Instance.new("TextLabel")
+		l.BackgroundTransparency = 1
+		l.Size = UDim2.new(1, -6, 0, 0)
+		l.AutomaticSize = Enum.AutomaticSize.Y
+		l.TextWrapped = true
+		l.TextXAlignment = Enum.TextXAlignment.Left
+		l.Font = Enum.Font.Code
+		l.TextSize = 11
+		l.TextColor3 = Color3.fromRGB(220, 220, 220)
+		l.Text = tostring(msg)
+		l.Parent = logScroll
+		local n = 0
 		for _, k in ipairs(logScroll:GetChildren()) do
-			if k:IsA("TextLabel") then k:Destroy() break end
+			if k:IsA("TextLabel") then n += 1 end
 		end
-	end
-	task.defer(function()
-		if logScroll then logScroll.CanvasPosition = Vector2.new(0, 1e6) end
+		if n > CFG.MAX_LOG then
+			for _, k in ipairs(logScroll:GetChildren()) do
+				if k:IsA("TextLabel") then k:Destroy() break end
+			end
+		end
+		task.defer(function()
+			if logScroll then logScroll.CanvasPosition = Vector2.new(0, 1e6) end
+		end)
 	end)
 end
 
@@ -157,12 +159,23 @@ local function writeJson(file, data)
 	if writefile then pcall(function() writefile(file, HttpService:JSONEncode(data)) end) end
 end
 local function readJson(file)
-	if isfile and isfile(file) then
-		local ok, d = pcall(function() return HttpService:JSONDecode(readfile(file)) end)
-		if ok and type(d) == "table" then return d end
+	if isfile and readfile then
+		local okExists, exists = pcall(isfile, file)
+		if okExists and exists then
+			local okRead, raw = pcall(readfile, file)
+			if okRead and type(raw) == "string" and raw ~= "" then
+				local okDec, d = pcall(function() return HttpService:JSONDecode(raw) end)
+				if okDec and type(d) == "table" then return d end
+			end
+		end
 	end
 end
-local function deepcopy(t) return HttpService:JSONDecode(HttpService:JSONEncode(t)) end
+local function deepcopy(t)
+	local ok, res = pcall(function()
+		return HttpService:JSONDecode(HttpService:JSONEncode(t))
+	end)
+	return ok and res or {}
+end
 
 local function saveSettings() writeJson(CFG.SET_FILE, S) end
 local function saveCurrent() writeJson(CFG.CUR_FILE, macro) end
@@ -171,7 +184,7 @@ local function saveSlots() writeJson(CFG.SLOT_FILE, slots) end
 ------------------------------------------------------------------ CASH
 local cashObj, cashLabel, guiCash
 local function matchCash(n)
-	n = n:lower()
+	n = tostring(n):lower()
 	for _, k in ipairs(CFG.CASH_NAMES) do if n == k then return true end end
 end
 local function findCash()
@@ -196,14 +209,14 @@ local function getCash()
 		local pg = LP:FindFirstChild("PlayerGui")
 		if pg then
 			for _, v in ipairs(pg:GetDescendants()) do
-				if v:IsA("TextLabel") and matchCash(v.Name) and v.Text:match("%d") then
+				if v:IsA("TextLabel") and matchCash(v.Name) and tostring(v.Text):match("%d") then
 					guiCash = v break
 				end
 			end
 		end
 	end
 	if guiCash then
-		local digits = guiCash.Text:gsub("[^%d]", "")
+		local digits = tostring(guiCash.Text):gsub("[^%d]", "")
 		return tonumber(digits)
 	end
 	return nil
@@ -462,7 +475,6 @@ end
 
 local function processTp(it)
 	local args = it.args
-	-- panggilan RequestTowerAbility yang membawa koordinat = tujuan teleport
 	if watch and hasVec(args) then
 		addStep("RequestTowerAbility", "InvokeServer", args)
 		pending[it.seq] = false
@@ -519,7 +531,6 @@ finalizeWatch = function(w)
 		ability = tostring(w.args[2]), steps = steps,
 	}, w.tw, w.tt, w.tg)
 
-	-- perbarui posisi terbaru tower (untuk pencocokan upgrade/sell berikutnya)
 	local dest
 	for _, s in ipairs(w.steps) do dest = dest or destOf(s.args) end
 	if moved and newPos then
@@ -542,7 +553,6 @@ finalizeWatch = function(w)
 	flush()
 end
 
--- pantau batas waktu tujuan teleport
 task.spawn(function()
 	while alive do
 		task.wait(0.2)
@@ -580,7 +590,6 @@ local function handleRecorded(it)
 	local tw, tt, tg = it.tw, it.tt, it.tg
 	local tstr = ("W%d +%.1fs"):format(tw or 0, math.max(0, tt or 0))
 
-	-- ABILITY (FireServer: towerId, abilityName)
 	if kind == "ability" then
 		local X, ab = args[1], args[2]
 		log(("TANGKAP ability %s"):format(tostring(ab)))
@@ -626,7 +635,6 @@ local function handleRecorded(it)
 					tostring(name), pos.X, pos.Y, pos.Z, fmt(cost), tstr))
 			else
 				log(("SKIP gagal place %s (tidak dicatat)"):format(tostring(name)))
-				-- bisa jadi ini tombol Place milik teleport (tower dipindah, bukan ditambah)
 				if watch then addStep("RequestPlacement", "InvokeServer", args) end
 			end
 		end
@@ -658,13 +666,11 @@ local function handleRecorded(it)
 	flush()
 end
 
--- Handler jalan di thread game: HANYA ambil data & masukkan ke antrean
 G.TMacro_Handler4 = function(self, method, call, ...)
 	if not alive or mode ~= "record" then return call(...) end
 	local name = self.Name
 	local kind = TRACK[name]
 	if not kind then
-		-- panggilan lain (mis. tombol Place milik teleport) hanya diawasi selama window teleport
 		if G.TMacro_Watching and not FOLLOW_IGNORE[name] then
 			queue[#queue + 1] = { k = "follow", remote = name, method = method, args = table.pack(...) }
 		end
@@ -687,7 +693,6 @@ G.TMacro_Handler4 = function(self, method, call, ...)
 	return table.unpack(res, 1, res.n)
 end
 
--- Worker di thread skrip (aman untuk Instance.new / log)
 task.spawn(function()
 	while alive do
 		local it = table.remove(queue, 1)
@@ -800,7 +805,6 @@ local function callStep(st)
 end
 
 local function doTeleport(a)
-	-- pastikan semua tower yang direferensikan sudah ter-place di match ini
 	for _, st in ipairs(a.steps) do
 		for _, v in ipairs(st.a) do
 			if type(v) == "table" and v.__t == "tower" and not targetFor(v.id) then return false end
@@ -810,12 +814,11 @@ local function doTeleport(a)
 	local inst = m and m.inst
 	local before = (inst and inst.Parent) and getPos(inst) or nil
 
-	for si, st in ipairs(a.steps) do
+	for _, st in ipairs(a.steps) do
 		if not callStep(st) then return false end
 		task.wait(0.25)
 	end
 
-	-- verifikasi: tower harus berpindah (hanya jika ada langkah tujuan)
 	if #a.steps > 1 and before and inst and inst.Parent then
 		local t0 = os.clock()
 		repeat
@@ -867,7 +870,6 @@ local function doAction(a)
 	return verifyAction(a.type, res, cashBefore, countBefore)
 end
 
--- apakah wave & waktu game sudah sesuai dengan saat direkam?
 local function timeReached(a)
 	if a.w == nil then return true end
 	if waveSeen or a.w == 0 then
@@ -881,7 +883,7 @@ end
 
 local refreshUI
 local function playMacro()
-	if #macro == 0 then log("Belum ada rekaman.") mode = "idle" refreshUI() return end
+	if #macro == 0 then log("Belum ada rekaman.") mode = "idle" if refreshUI then refreshUI() end return end
 	idMap, placeById, claimed = {}, {}, {}
 	local legacy = 0
 	for _, a in ipairs(macro) do
@@ -902,7 +904,6 @@ local function playMacro()
 		if a.type ~= "place" and not idMap[a.id] then
 			log(("[%d/%d] LEWATI %s: tower %s belum ter-place"):format(i, #macro, a.type, tostring(a.name)))
 		else
-			-- 1) tunggu wave & waktu game sesuai rekaman
 			local lastLog = os.clock()
 			while mode == "play" and alive and not timeReached(a) do
 				if os.clock() - lastLog > 4 then
@@ -914,7 +915,6 @@ local function playMacro()
 			end
 			if mode ~= "play" or not alive then break end
 
-			-- 2) eksekusi; kalau cash belum cukup, tunggu sampai berhasil (tidak lanjut sebelum sukses)
 			local waitStart, lastLog2, tries = os.clock(), 0, 0
 			while mode == "play" and alive do
 				local cash = getCash()
@@ -954,7 +954,7 @@ local function playMacro()
 
 	if mode == "play" then log("PLAY selesai.") end
 	mode = "idle"
-	refreshUI()
+	if refreshUI then refreshUI() end
 end
 
 ------------------------------------------------------------------ GUI DETECTION (wave & speed)
@@ -968,12 +968,12 @@ local function guiVisible(o)
 	return true
 end
 
-local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+local function trim(s) return (tostring(s):gsub("^%s+", ""):gsub("%s+$", "")) end
 
 local function txt(o)
 	local t = o.ContentText
 	if not t or t == "" then t = o.Text end
-	return (t:gsub("<[^>]+>", ""))
+	return (tostring(t):gsub("<[^>]+>", ""))
 end
 
 local function center(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
@@ -982,7 +982,7 @@ local function center(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
 local waveSrc, nextWaveScan = nil, 0
 
 local function parseFull(t)
-	local a = t:upper():match("WAVE%s*(%d+)%s*/%s*%d+")
+	local a = tostring(t):upper():match("WAVE%s*(%d+)%s*/%s*%d+")
 	return a and tonumber(a)
 end
 
@@ -1097,7 +1097,6 @@ local function detectSpeed()
 	return nil
 end
 
--- ---- DIAGNOSA (hasil tampil di tab Log)
 local function diag()
 	log("=== DIAGNOSA WAVE / SPEED ===")
 	local pg = LP:FindFirstChild("PlayerGui")
@@ -1307,7 +1306,7 @@ local function resultsVisible()
 	if not pg then return false end
 	for _, v in ipairs(pg:GetDescendants()) do
 		if v:IsA("TextLabel") or v:IsA("TextButton") then
-			local t = v.Text
+			local t = tostring(v.Text)
 			if #t > 0 and #t < 24 then
 				local u = t:upper():gsub("[^%u ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
 				if CFG.RESULT_TEXTS[u] and guiVisible(v) then return true, t end
@@ -1605,21 +1604,35 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------ UI
-local parent
-pcall(function() parent = (gethui and gethui()) or game:GetService("CoreGui") end)
-if not parent then parent = LP:WaitForChild("PlayerGui") end
+local function attachGui(guiObj)
+	local targets = {}
+	pcall(function() if gethui then table.insert(targets, gethui()) end end)
+	pcall(function() table.insert(targets, game:GetService("CoreGui")) end)
+	pcall(function() table.insert(targets, LP:WaitForChild("PlayerGui", 10)) end)
+
+	for _, par in ipairs(targets) do
+		if par then
+			local ok = pcall(function()
+				guiObj.Parent = par
+			end)
+			if ok and guiObj.Parent == par then
+				return par
+			end
+		end
+	end
+end
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "TMacroUI"
 gui.ResetOnSpawn = false
-gui.DisplayOrder = 999
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.DisplayOrder = 999999
 pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
-gui.Parent = parent
 
 local FULL = UDim2.fromOffset(270, 300)
 local frame = Instance.new("Frame")
 frame.Size = FULL
-frame.Position = UDim2.new(0, 10, 0.1, 0)
+frame.Position = UDim2.new(0, 10, 0.12, 0)
 frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
 frame.BorderSizePixel = 0
 frame.Active = true
@@ -1739,7 +1752,7 @@ slotList.Size = UDim2.new(1, 0, 1, -124)
 slotList.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
 slotList.BorderSizePixel = 0
 slotList.ScrollBarThickness = 4
-slotList.CanvasSize = UDim2.new()
+slotList.CanvasSize = UDim2.fromOffset(0, 0)
 slotList.AutomaticCanvasSize = Enum.AutomaticSize.Y
 slotList.Parent = pm
 local slotLayout = Instance.new("UIListLayout", slotList)
@@ -1841,7 +1854,7 @@ pa.BackgroundTransparency = 1
 pa.BorderSizePixel = 0
 pa.Size = UDim2.new(1, 0, 1, 0)
 pa.ScrollBarThickness = 3
-pa.CanvasSize = UDim2.new()
+pa.CanvasSize = UDim2.fromOffset(0, 0)
 pa.AutomaticCanvasSize = Enum.AutomaticSize.Y
 pa.Parent = pages.Auto
 local paLayout = Instance.new("UIListLayout", pa)
@@ -1977,7 +1990,7 @@ logScroll.Size = UDim2.new(1, 0, 1, 0)
 logScroll.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
 logScroll.BorderSizePixel = 0
 logScroll.ScrollBarThickness = 4
-logScroll.CanvasSize = UDim2.new()
+logScroll.CanvasSize = UDim2.fromOffset(0, 0)
 logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 logScroll.Parent = pages.Log
 Instance.new("UIListLayout", logScroll).SortOrder = Enum.SortOrder.LayoutOrder
@@ -1990,7 +2003,6 @@ end
 recBtn.MouseButton1Click:Connect(function()
 	if mode == "play" then return end
 	if mode == "record" then
-		-- selesaikan teleport yang masih menunggu tujuan supaya tidak hilang
 		if watch then
 			local w = watch
 			local ok, err = pcall(finalizeWatch, w)
@@ -2054,6 +2066,11 @@ end
 minBtn.MouseButton1Click:Connect(function() setMinimized(not minimized) end)
 setMinimized(true) -- otomatis minimize saat pertama kali di-execute
 
+local attachedParent = attachGui(gui)
+if not attachedParent then
+	warn("[Macro] Gagal memasang ScreenGui ke parent mana pun")
+end
+
 local dragging, dragStart, startPos
 title.InputBegan:Connect(function(i)
 	if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -2061,7 +2078,7 @@ title.InputBegan:Connect(function(i)
 	end
 end)
 UIS.InputChanged:Connect(function(i)
-	if dragging and (i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseMovement) then
+	if dragging and (i.UserInputType == Enum.UserInputType.Touch or i.UserInputType.MouseMovement) then
 		local d = i.Position - dragStart
 		frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
 	end
@@ -2074,10 +2091,12 @@ end)
 
 task.spawn(function()
 	while alive do
-		cashLabel.Text = "Cash: " .. fmt(getCash())
-		infoLabel.Text = ("W%d  +%.0fs  x%s%s%s"):format(
-			curWave, math.max(0, gt - waveStartGT), tostring(curSpeed),
-			speedSeen and "" or "?", waveSeen and "" or " (wave?)")
+		pcall(function()
+			cashLabel.Text = "Cash: " .. fmt(getCash())
+			infoLabel.Text = ("W%d  +%.0fs  x%s%s%s"):format(
+				curWave, math.max(0, gt - waveStartGT), tostring(curSpeed),
+				speedSeen and "" or "?", waveSeen and "" or " (wave?)")
+		end)
 		task.wait(0.5)
 	end
 end)
@@ -2171,7 +2190,6 @@ local hooked = installHook()
 log("Hook: " .. (hooked and "aktif" or "GAGAL"))
 log(("Makro aktif: %d aksi | Slot tersimpan: %d"):format(#macro, (function() local c = 0 for _ in pairs(slots) do c += 1 end return c end)()))
 
--- pantau item baru di workspace + event ItemDrop (Drop / Taken)
 wsConn = workspace.DescendantAdded:Connect(onWsAdded)
 task.spawn(function()
 	local r = RS:WaitForChild("Remotes", 30)
@@ -2180,7 +2198,6 @@ task.spawn(function()
 	table.insert(itemConns, r.DescendantAdded:Connect(function(d) connectItem(d) end))
 end)
 
--- pantau event hasil match (untuk Auto Replay)
 task.spawn(function()
 	local r = RS:WaitForChild("Remotes", 30)
 	local e = r and r:WaitForChild("Events", 30)
