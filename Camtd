@@ -1,7 +1,7 @@
 --[[
-  Tower Macro v3.7 - Delta Mobile
+  Tower Macro v3.8 - Delta Mobile
   Makro berbasis WAVE + WAKTU GAME (otomatis menyesuaikan speed x1 / x1.5 / x2)
-  Record/Play (place, upgrade, sell, ability) + Save Slot + Auto Speed + Auto Start (jeda 5 detik)
+  Record/Play (place, upgrade, sell, ability, TELEPORT tower) + Save Slot + Auto Speed + Auto Start (jeda 5 detik)
   + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay + Auto Pickup (jalan ke item)
   UI otomatis minimize saat pertama di-execute
 ]]
@@ -10,6 +10,7 @@ if not game:IsLoaded() then game.Loaded:Wait() end
 if getgenv and getgenv().TMacro_Destroy then pcall(getgenv().TMacro_Destroy) end
 local G = getgenv()
 G.TMacro_Handler2 = nil -- matikan handler versi lama
+G.TMacro_Handler3 = nil
 
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
@@ -34,6 +35,8 @@ local CFG = {
 	AUTOPLAY_DELAY = 3,
 	REPLAY_DELAY = 3,
 	START_DELAY = 5, -- jeda (detik) sebelum Auto Start mengirim ReadyUp
+	TP_WINDOW = 20,  -- detik menunggu tujuan teleport setelah ability diklik
+	TP_MAX_TRY = 8,  -- percobaan playback teleport sebelum dilewati
 	RESULT_TEXTS = {
 		["VICTORY"] = true, ["DEFEAT"] = true, ["GAME OVER"] = true,
 		["YOU WIN"] = true, ["YOU LOSE"] = true,
@@ -59,8 +62,13 @@ local TRACK = {
 	RequestTowerUpgrade = "upgrade",
 	RequestTowerSell = "sell",
 	UpdateAbilityAutoUse = "ability",
+	RequestTowerAbility = "tpability",
 }
 local REMOTE_OF = { place = "RequestPlacement", upgrade = "RequestTowerUpgrade", sell = "RequestTowerSell" }
+local FOLLOW_IGNORE = {
+	SpeedToggle = true, ItemDrop = true, ReadyUp = true,
+	CastDifficultyVote = true, ResultsAction = true,
+}
 
 local alive = true
 local mode = "idle"
@@ -75,15 +83,15 @@ local S = {
 }
 
 -- ===== WAKTU GAME (detik setara speed x1) =====
-local gt = 0                 -- jam game: bertambah = waktu nyata x speed
-local curSpeed = 1           -- speed game terdeteksi
-local speedSeen = false      -- speed berhasil terbaca / diatur manual
-local curWave = 0            -- wave saat ini (0 = belum mulai / lobby)
-local waveStartGT = 0        -- jam game saat wave ini dimulai
-local waveSeen = false       -- label WAVE pernah ditemukan
-local waveApprox = false     -- awal wave diperkirakan (skrip dijalankan di tengah wave)
-local recStartGT = 0         -- jam game saat Record dimulai
-local playStartGT = 0        -- jam game saat Play dimulai
+local gt = 0
+local curSpeed = 1
+local speedSeen = false
+local curWave = 0
+local waveStartGT = 0
+local waveSeen = false
+local waveApprox = false
+local recStartGT = 0
+local playStartGT = 0
 
 local function isGuid(s)
 	return type(s) == "string" and s:match("^%x+%-%x+%-%x+%-%x+%-%x+$") ~= nil
@@ -128,6 +136,20 @@ local function log(msg)
 	task.defer(function()
 		if logScroll then logScroll.CanvasPosition = Vector2.new(0, 1e6) end
 	end)
+end
+
+local function summ(v)
+	local t = typeof(v)
+	if t == "string" then return '"' .. v:sub(1, 10) .. '"'
+	elseif t == "Vector3" then return ("V3(%.0f,%.0f,%.0f)"):format(v.X, v.Y, v.Z)
+	elseif t == "CFrame" then local p = v.Position return ("CF(%.0f,%.0f,%.0f)"):format(p.X, p.Y, p.Z)
+	end
+	return tostring(v):sub(1, 12)
+end
+local function summArgs(a)
+	local p = {}
+	for i = 1, math.min(a.n or #a, 6) do p[i] = summ(a[i]) end
+	return table.concat(p, " | ")
 end
 
 ------------------------------------------------------------------ FILES
@@ -280,6 +302,20 @@ local function eventByName(name)
 	return r and r:FindFirstChild(name)
 end
 
+local remCache = {}
+local function findRemote(name)
+	local c = remCache[name]
+	if c and c.Parent then return c end
+	local r = RS:FindFirstChild("Remotes")
+	if not r then return nil end
+	for _, d in ipairs(r:GetDescendants()) do
+		if d.Name == name and (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) then
+			remCache[name] = d
+			return d
+		end
+	end
+end
+
 ------------------------------------------------------------------ COUNT LABEL
 local countLabel
 local function refreshCount()
@@ -289,7 +325,7 @@ local function refreshCount()
 		if a.type == "place" then p += 1
 		elseif a.type == "upgrade" then u += 1
 		elseif a.type == "sell" then s += 1
-		elseif a.type == "ability" then ab += 1 end
+		elseif a.type == "ability" or a.type == "tpability" then ab += 1 end
 	end
 	countLabel.Text = ("P:%d U:%d S:%d A:%d"):format(p, u, s, ab)
 end
@@ -297,7 +333,10 @@ end
 ------------------------------------------------------------------ RECORD
 local seqCounter, nextFlush, pending = 0, 1, {}
 local knownIds, nameById, liveById = {}, {}, {}
+local posNow, instById = {}, {}
 local queue = {}
+local watch = nil
+local finalizeWatch
 
 local function flush()
 	while pending[nextFlush] ~= nil do
@@ -315,6 +354,7 @@ local function register(pid, rid, guid, inst)
 	if guid and guid ~= rid then knownIds[guid] = { pid = pid, kind = { t = "guid" } } end
 	if inst then
 		claimed[inst] = true
+		instById[pid] = inst
 		for _, k in ipairs(keysOf(inst)) do
 			if type(k.key) == "string" and k.key ~= rid and k.key ~= guid then
 				if knownIds[k.key] then
@@ -339,7 +379,8 @@ local function resolve(X)
 					if p then
 						local best, bd
 						for pid, e in pairs(liveById) do
-							local d = (Vector3.new(e.x, 0, e.z) - Vector3.new(p.X, 0, p.Z)).Magnitude
+							local pn = posNow[pid] or { x = e.x, z = e.z }
+							local d = (Vector3.new(pn.x, 0, pn.z) - Vector3.new(p.X, 0, p.Z)).Magnitude
 							if not bd or d < bd then best, bd = pid, d end
 						end
 						if best and bd < CFG.MATCH_DIST then return best, k.kind end
@@ -350,7 +391,193 @@ local function resolve(X)
 	end
 end
 
-local function handleRecorded(kind, seq, args, ret, cashBefore, countBefore, snap, tw, tt, tg)
+local function findTowerInst(X)
+	local f = getFolder()
+	if f then
+		for _, inst in ipairs(f:GetChildren()) do
+			for _, k in ipairs(keysOf(inst)) do
+				if k.key == X then return inst end
+			end
+		end
+	end
+end
+
+------------------------------------------------------------------ TELEPORT (serialisasi + pengawasan tujuan)
+local function hasVec(args)
+	for i = 1, args.n or #args do
+		local t = typeof(args[i])
+		if t == "Vector3" or t == "CFrame" then return true end
+	end
+	return false
+end
+
+local function destOf(args)
+	for i = 1, args.n or #args do
+		local v = args[i]
+		if typeof(v) == "Vector3" then return v end
+		if typeof(v) == "CFrame" then return v.Position end
+	end
+end
+
+local function serVal(v)
+	local t = typeof(v)
+	if t == "string" then
+		if isGuid(v) then
+			local pid = resolve(v)
+			if pid then return { __t = "tower", id = pid } end
+			return { __t = "guid" }
+		end
+		return v
+	elseif t == "number" then
+		local ok, now = pcall(function() return workspace:GetServerTimeNow() end)
+		if ok and math.abs(v - now) < 600 then return { __t = "time" } end
+		return v
+	elseif t == "boolean" then
+		return v
+	elseif t == "Vector3" then
+		return { __t = "v3", x = v.X, y = v.Y, z = v.Z }
+	elseif t == "CFrame" then
+		return { __t = "cf", c = { v:GetComponents() } }
+	end
+	return { __t = "nil" }
+end
+
+local function serArgs(args)
+	local out = {}
+	for i = 1, args.n or #args do out[i] = serVal(args[i]) end
+	return out
+end
+
+local function addStep(remote, method, args)
+	if not watch then return end
+	if hasVec(args) then
+		table.insert(watch.steps, { remote = remote, method = method, args = args })
+		watch.lastStep = os.clock()
+		log(("TELEPORT: tujuan tertangkap via %s"):format(remote))
+	elseif watch.diag < 6 then
+		watch.diag += 1
+		log(("  follow-up %s: %s"):format(remote, summArgs(args)))
+	end
+end
+
+local function processTp(it)
+	local args = it.args
+	-- panggilan RequestTowerAbility yang membawa koordinat = tujuan teleport
+	if watch and hasVec(args) then
+		addStep("RequestTowerAbility", "InvokeServer", args)
+		pending[it.seq] = false
+		flush()
+		return
+	end
+	if watch then pcall(finalizeWatch, watch) end
+
+	local X = args[1]
+	if it.ret == false then
+		log(("SKIP gagal ability %s (tidak dicatat)"):format(tostring(args[2])))
+		pending[it.seq] = false
+		flush()
+		return
+	end
+	local pid = resolve(X)
+	if not pid then
+		log(("DILEWATI ability %s: tower tidak dikenal id=%s"):format(tostring(args[2]), tostring(X)))
+		pending[it.seq] = false
+		flush()
+		return
+	end
+	local inst = instById[pid]
+	if not (inst and inst.Parent) then inst = findTowerInst(X) end
+	watch = {
+		seq = it.seq, pid = pid, args = args, inst = inst,
+		posBefore = inst and getPos(inst) or nil,
+		steps = {}, t0 = os.clock(), lastStep = 0, diag = 0,
+		tw = it.tw, tt = it.tt, tg = it.tg,
+	}
+	G.TMacro_Watching = true
+	log(("TELEPORT: ability '%s' pada %s. Pilih tujuan lalu klik Place (menunggu maks %ds)..."):format(
+		tostring(args[2]), tostring(nameById[pid]), CFG.TP_WINDOW))
+end
+
+finalizeWatch = function(w)
+	if watch ~= w then return end
+	watch = nil
+	G.TMacro_Watching = false
+
+	local moved, newPos = false, nil
+	if w.inst and w.inst.Parent then
+		newPos = getPos(w.inst)
+		if newPos and w.posBefore and (newPos - w.posBefore).Magnitude > 1.5 then moved = true end
+	end
+
+	local steps = { { remote = "RequestTowerAbility", method = "InvokeServer", a = serArgs(w.args) } }
+	for _, s in ipairs(w.steps) do
+		steps[#steps + 1] = { remote = s.remote, method = s.method, a = serArgs(s.args) }
+	end
+
+	local entry = stamp({
+		type = "tpability", id = w.pid, name = nameById[w.pid],
+		ability = tostring(w.args[2]), steps = steps,
+	}, w.tw, w.tt, w.tg)
+
+	-- perbarui posisi terbaru tower (untuk pencocokan upgrade/sell berikutnya)
+	local dest
+	for _, s in ipairs(w.steps) do dest = dest or destOf(s.args) end
+	if moved and newPos then
+		posNow[w.pid] = { x = newPos.X, z = newPos.Z }
+	elseif dest then
+		posNow[w.pid] = { x = dest.X, z = dest.Z }
+	end
+
+	local tstr = ("W%d +%.1fs"):format(w.tw or 0, math.max(0, w.tt or 0))
+	if #w.steps > 0 then
+		log(("REC teleport %s -> %s [%s] (%d langkah)"):format(
+			tostring(nameById[w.pid]), dest and summ(dest) or "?", tstr, #steps))
+	elseif moved then
+		log(("PERINGATAN: %s berpindah tapi remote tujuan TIDAK tertangkap; hanya ability yang tercatat. Kirim log ini ke saya."):format(tostring(nameById[w.pid])))
+	else
+		log(("REC ability '%s' %s (tanpa tujuan) [%s]"):format(tostring(w.args[2]), tostring(nameById[w.pid]), tstr))
+	end
+
+	pending[w.seq] = entry
+	flush()
+end
+
+-- pantau batas waktu tujuan teleport
+task.spawn(function()
+	while alive do
+		task.wait(0.2)
+		local w = watch
+		if w then
+			local now = os.clock()
+			local done = false
+			if #w.steps > 0 and now - w.lastStep > 1.0 then
+				done = true
+			elseif now - w.t0 > CFG.TP_WINDOW then
+				done = true
+			elseif #w.steps == 0 and w.inst and w.inst.Parent and w.posBefore then
+				local p = getPos(w.inst)
+				if p and (p - w.posBefore).Magnitude > 1.5 then
+					w.movedAt = w.movedAt or now
+					if now - w.movedAt > 1.5 then done = true end
+				end
+			end
+			if done then
+				local ok, err = pcall(finalizeWatch, w)
+				if not ok then
+					log("ERROR teleport: " .. tostring(err))
+					if pending[w.seq] == nil then pending[w.seq] = false end
+					pcall(flush)
+				end
+			end
+		end
+	end
+end)
+
+------------------------------------------------------------------ RECORD (aksi biasa)
+local function handleRecorded(it)
+	local kind, seq, args, ret = it.kind, it.seq, it.args, it.ret
+	local cashBefore, countBefore, snap = it.cashBefore, it.countBefore, it.snap
+	local tw, tt, tg = it.tw, it.tt, it.tg
 	local tstr = ("W%d +%.1fs"):format(tw or 0, math.max(0, tt or 0))
 
 	-- ABILITY (FireServer: towerId, abilityName)
@@ -393,11 +620,14 @@ local function handleRecorded(kind, seq, args, ret, cashBefore, countBefore, sna
 				}, tw, tt, tg)
 				nameById[pid] = name
 				liveById[pid] = entry
+				posNow[pid] = { x = pos.X, z = pos.Z }
 				register(pid, rid, type(guid) == "string" and guid or nil, inst)
 				log(("REC place %s (%.1f, %.1f, %.1f) cost=%s [%s]"):format(
 					tostring(name), pos.X, pos.Y, pos.Z, fmt(cost), tstr))
 			else
 				log(("SKIP gagal place %s (tidak dicatat)"):format(tostring(name)))
+				-- bisa jadi ini tombol Place milik teleport (tower dipindah, bukan ditambah)
+				if watch then addStep("RequestPlacement", "InvokeServer", args) end
 			end
 		end
 	else
@@ -429,36 +659,62 @@ local function handleRecorded(kind, seq, args, ret, cashBefore, countBefore, sna
 end
 
 -- Handler jalan di thread game: HANYA ambil data & masukkan ke antrean
-G.TMacro_Handler3 = function(self, method, call, ...)
+G.TMacro_Handler4 = function(self, method, call, ...)
 	if not alive or mode ~= "record" then return call(...) end
-	local kind = TRACK[self.Name]
-	if not kind then return call(...) end
+	local name = self.Name
+	local kind = TRACK[name]
+	if not kind then
+		-- panggilan lain (mis. tombol Place milik teleport) hanya diawasi selama window teleport
+		if G.TMacro_Watching and not FOLLOW_IGNORE[name] then
+			queue[#queue + 1] = { k = "follow", remote = name, method = method, args = table.pack(...) }
+		end
+		return call(...)
+	end
 	local args = table.pack(...)
 	seqCounter += 1
 	local seq = seqCounter
-	-- catat wave & waktu game saat aksi dilakukan
 	local tw, tt, tg = curWave, gt - waveStartGT, gt - recStartGT
 	local okp, cashBefore, countBefore, snap = pcall(function()
 		return getCash(), towerCount(), snapshot()
 	end)
 	if not okp then cashBefore, countBefore, snap = nil, nil, {} end
 	local res = table.pack(call(...))
-	table.insert(queue, table.pack(kind, seq, args, res[1], cashBefore, countBefore, snap, tw, tt, tg))
+	queue[#queue + 1] = {
+		k = "track", kind = kind, seq = seq, args = args, ret = res[1],
+		cashBefore = cashBefore, countBefore = countBefore, snap = snap,
+		tw = tw, tt = tt, tg = tg,
+	}
 	return table.unpack(res, 1, res.n)
 end
 
+-- Worker di thread skrip (aman untuk Instance.new / log)
 task.spawn(function()
 	while alive do
 		local it = table.remove(queue, 1)
 		if it then
-			task.spawn(function()
-				local ok, err = pcall(handleRecorded, table.unpack(it, 1, it.n))
-				if not ok then
-					log("ERROR catat: " .. tostring(err))
-					if pending[it[2]] == nil then pending[it[2]] = false end
-					pcall(flush)
+			local ok, err = pcall(function()
+				if it.k == "follow" then
+					addStep(it.remote, it.method, it.args)
+				elseif it.kind == "tpability" then
+					processTp(it)
+				else
+					task.spawn(function()
+						local ok2, err2 = pcall(handleRecorded, it)
+						if not ok2 then
+							log("ERROR catat: " .. tostring(err2))
+							if pending[it.seq] == nil then pending[it.seq] = false end
+							pcall(flush)
+						end
+					end)
 				end
 			end)
+			if not ok then
+				log("ERROR catat: " .. tostring(err))
+				if it.seq and pending[it.seq] == nil then
+					pending[it.seq] = false
+					pcall(flush)
+				end
+			end
 		else
 			task.wait(0.05)
 		end
@@ -466,7 +722,7 @@ task.spawn(function()
 end)
 
 local function installHook()
-	local key = "4:" .. tostring(game.JobId)
+	local key = "5:" .. tostring(game.JobId)
 	if G.TMacro_HookKey == key then return true end
 	if not (hookmetamethod and getnamecallmethod) then
 		log("ERROR: executor tidak support hookmetamethod")
@@ -476,15 +732,18 @@ local function installHook()
 	old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
 		local method = getnamecallmethod()
 		if (method == "InvokeServer" or method == "FireServer")
-			and typeof(self) == "Instance" and TRACK[self.Name] and not checkcaller() then
-			local h = G.TMacro_Handler3
-			if h then
-				local s, m = self, method
-				local call = function(...)
-					if setnamecallmethod then setnamecallmethod(m) end
-					return old(s, ...)
+			and typeof(self) == "Instance" and not checkcaller() then
+			local n = self.Name
+			if TRACK[n] or (G.TMacro_Watching and not FOLLOW_IGNORE[n]) then
+				local h = G.TMacro_Handler4
+				if h then
+					local s, m = self, method
+					local call = function(...)
+						if setnamecallmethod then setnamecallmethod(m) end
+						return old(s, ...)
+					end
+					return h(self, m, call, ...)
 				end
-				return h(self, m, call, ...)
 			end
 		end
 		return old(self, ...)
@@ -510,7 +769,70 @@ local function targetFor(pid)
 	return m.rid or m.guid
 end
 
+local function deser(v)
+	if type(v) == "table" and v.__t then
+		local t = v.__t
+		if t == "tower" then return targetFor(v.id)
+		elseif t == "v3" then return Vector3.new(v.x, v.y, v.z)
+		elseif t == "cf" then return CFrame.new(table.unpack(v.c))
+		elseif t == "time" then return workspace:GetServerTimeNow()
+		elseif t == "guid" then return HttpService:GenerateGUID(false):lower()
+		end
+		return nil
+	end
+	return v
+end
+
+local function callStep(st)
+	local rem = findRemote(st.remote)
+	if not rem then return false end
+	local out, n = {}, #st.a
+	for i = 1, n do out[i] = deser(st.a[i]) end
+	local ok, res
+	if st.method == "FireServer" then
+		ok = pcall(function() rem:FireServer(table.unpack(out, 1, n)) end)
+	else
+		ok, res = pcall(function() return rem:InvokeServer(table.unpack(out, 1, n)) end)
+	end
+	if not ok then return false end
+	if res == false then return false end
+	return true
+end
+
+local function doTeleport(a)
+	-- pastikan semua tower yang direferensikan sudah ter-place di match ini
+	for _, st in ipairs(a.steps) do
+		for _, v in ipairs(st.a) do
+			if type(v) == "table" and v.__t == "tower" and not targetFor(v.id) then return false end
+		end
+	end
+	local m = idMap[a.id]
+	local inst = m and m.inst
+	local before = (inst and inst.Parent) and getPos(inst) or nil
+
+	for si, st in ipairs(a.steps) do
+		if not callStep(st) then return false end
+		task.wait(0.25)
+	end
+
+	-- verifikasi: tower harus berpindah (hanya jika ada langkah tujuan)
+	if #a.steps > 1 and before and inst and inst.Parent then
+		local t0 = os.clock()
+		repeat
+			local p = getPos(inst)
+			if p and (p - before).Magnitude > 1 then return true end
+			task.wait(0.1)
+		until os.clock() - t0 > 2
+		return false
+	end
+	return true
+end
+
 local function doAction(a)
+	if a.type == "tpability" then
+		return doTeleport(a)
+	end
+
 	if a.type == "ability" then
 		local ev = eventByName("UpdateAbilityAutoUse")
 		local target = targetFor(a.id)
@@ -547,13 +869,12 @@ end
 
 -- apakah wave & waktu game sudah sesuai dengan saat direkam?
 local function timeReached(a)
-	if a.w == nil then return true end -- rekaman lama: tanpa data waktu
+	if a.w == nil then return true end
 	if waveSeen or a.w == 0 then
 		if curWave > a.w then return true end
 		if curWave < a.w then return false end
 		return (gt - waveStartGT) >= (a.t or 0)
 	end
-	-- label WAVE tidak ditemukan: pakai waktu game total sejak Play
 	if a.g == nil then return true end
 	return (gt - playStartGT) >= a.g
 end
@@ -594,7 +915,7 @@ local function playMacro()
 			if mode ~= "play" or not alive then break end
 
 			-- 2) eksekusi; kalau cash belum cukup, tunggu sampai berhasil (tidak lanjut sebelum sukses)
-			local waitStart, lastLog2 = os.clock(), 0
+			local waitStart, lastLog2, tries = os.clock(), 0, 0
 			while mode == "play" and alive do
 				local cash = getCash()
 				local needWait = a.type ~= "sell" and a.cost and cash and cash < a.cost
@@ -608,17 +929,24 @@ local function playMacro()
 				elseif doAction(a) then
 					if a.type == "ability" then
 						log(("[%d/%d] OK ability '%s' %s | W%d +%.0fs"):format(i, #macro, tostring(a.ability), tostring(a.name), curWave, math.max(0, gt - waveStartGT)))
+					elseif a.type == "tpability" then
+						log(("[%d/%d] OK teleport/ability '%s' %s | W%d +%.0fs"):format(i, #macro, tostring(a.ability), tostring(a.name), curWave, math.max(0, gt - waveStartGT)))
 					else
 						log(("[%d/%d] OK %s %s | W%d +%.0fs cash=%s"):format(i, #macro, a.type, tostring(a.name), curWave, math.max(0, gt - waveStartGT), fmt(getCash())))
 					end
 					if a.type == "sell" then idMap[a.id] = nil end
 					break
 				else
+					tries += 1
+					if a.type == "tpability" and tries >= CFG.TP_MAX_TRY then
+						log(("[%d/%d] LEWATI teleport %s: gagal %d kali (cooldown / tujuan salah?)"):format(i, #macro, tostring(a.name), tries))
+						break
+					end
 					if os.clock() - lastLog2 > 3 then
 						lastLog2 = os.clock()
-						log(("[%d/%d] gagal %s %s (cash kurang?), coba lagi. cash=%s"):format(i, #macro, a.type, tostring(a.name), fmt(getCash())))
+						log(("[%d/%d] gagal %s %s, coba lagi. cash=%s"):format(i, #macro, a.type, tostring(a.name), fmt(getCash())))
 					end
-					task.wait(CFG.RETRY_DELAY)
+					task.wait(a.type == "tpability" and 1.5 or CFG.RETRY_DELAY)
 				end
 			end
 		end
@@ -642,7 +970,6 @@ end
 
 local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
 
--- teks yang benar-benar tampil di layar (tanpa tag RichText)
 local function txt(o)
 	local t = o.ContentText
 	if not t or t == "" then t = o.Text end
@@ -684,7 +1011,6 @@ local function scanWave()
 	end
 	if fullVis then return { obj = fullVis, mode = "full" } end
 	if fullAny then return { obj = fullAny, mode = "full" } end
-	-- label terpisah: "WAVE" dan "4/30"
 	for _, w in ipairs(words) do
 		local best, bd
 		for _, r in ipairs(ratios) do
@@ -739,7 +1065,6 @@ local function scanSpeed()
 			end
 		end
 	end
-	-- pasangkan tiap status dengan tombol kecepatan TERDEKAT di layar
 	local prs = {}
 	for _, s in ipairs(statuses) do
 		local best, bd
@@ -814,7 +1139,6 @@ task.spawn(function()
 		task.wait(0.1)
 		n += 1
 		pcall(function()
-			-- speed game (tiap ~0.3 detik)
 			if n % 3 == 0 then
 				local sp
 				if (S.spdMode or 0) > 0 then
@@ -829,19 +1153,17 @@ task.spawn(function()
 				end
 			end
 
-			-- wave
 			local w = getWave()
 			if w ~= nil then waveSeen = true end
 			w = w or 0
 			if w > 0 then
 				zeroSince = nil
 				if w ~= curWave then
-					waveApprox = first -- skrip dijalankan di tengah wave: awal wave hanya perkiraan
+					waveApprox = first
 					curWave = w
 					waveStartGT = gt
 				end
 			elseif curWave > 0 then
-				-- label hilang sebentar antar wave diabaikan; kalau >4 detik berarti match baru
 				zeroSince = zeroSince or os.clock()
 				if os.clock() - zeroSince > 4 then
 					curWave = 0
@@ -1335,7 +1657,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -36, 0, 30)
 title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 title.BorderSizePixel = 0
-title.Text = "  Tower Macro v3.7"
+title.Text = "  Tower Macro v3.8"
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.TextColor3 = Color3.new(1, 1, 1)
 title.Font = Enum.Font.GothamBold
@@ -1585,7 +1907,7 @@ diagBtn.MouseButton1Click:Connect(function()
 	task.spawn(function() pcall(diag) end)
 end)
 
-local hint = mkLabel(pa, "Makro mengikuti wave & waktu game (otomatis menyesuaikan speed). Kalau speed salah terbaca, atur manual lewat tombol Spd di tab Makro. Taruh skrip di folder autoexecute Delta agar Auto Play & Auto Replay jalan setelah rejoin.",
+local hint = mkLabel(pa, "Makro mengikuti wave & waktu game (otomatis menyesuaikan speed). Teleport tower: saat Record, klik ability, pilih tujuan, klik Place. Kalau speed salah terbaca, atur manual lewat tombol Spd di tab Makro.",
 	UDim2.new(), UDim2.new(1, -8, 0, 84), nil, Color3.fromRGB(150, 150, 165))
 hint.Font = Enum.Font.Gotham
 hint.TextSize = 10
@@ -1668,6 +1990,17 @@ end
 recBtn.MouseButton1Click:Connect(function()
 	if mode == "play" then return end
 	if mode == "record" then
+		-- selesaikan teleport yang masih menunggu tujuan supaya tidak hilang
+		if watch then
+			local w = watch
+			local ok, err = pcall(finalizeWatch, w)
+			if not ok then
+				log("ERROR teleport: " .. tostring(err))
+				if pending[w.seq] == nil then pending[w.seq] = false end
+				pcall(flush)
+			end
+		end
+		G.TMacro_Watching = false
 		mode = "idle"
 		saveCurrent()
 		log(("Record berhenti. Total %d aksi. Tekan Save untuk simpan permanen."):format(#macro))
@@ -1675,6 +2008,9 @@ recBtn.MouseButton1Click:Connect(function()
 		macro = {}
 		seqCounter, nextFlush, pending = 0, 1, {}
 		knownIds, nameById, liveById, claimed, queue = {}, {}, {}, {}, {}
+		posNow, instById = {}, {}
+		watch = nil
+		G.TMacro_Watching = false
 		refreshCount()
 		recStartGT = gt
 		if curWave == 0 then waveStartGT = gt end
@@ -1749,8 +2085,10 @@ end)
 G.TMacro_Destroy = function()
 	alive = false
 	mode = "idle"
+	G.TMacro_Watching = false
 	G.TMacro_Handler2 = nil
 	G.TMacro_Handler3 = nil
+	G.TMacro_Handler4 = nil
 	if hbConn then pcall(function() hbConn:Disconnect() end) end
 	if wsConn then pcall(function() wsConn:Disconnect() end) end
 	for _, c in ipairs(itemConns) do pcall(function() c:Disconnect() end) end
