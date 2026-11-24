@@ -1,10 +1,10 @@
 --[[
-  Tower Macro v3.9 - Delta Mobile
+  Tower Macro v4.0 - Delta Mobile
   Makro berbasis WAVE + WAKTU GAME (otomatis menyesuaikan speed x1 / x1.5 / x2)
   Record/Play (place, upgrade, sell, ability, TELEPORT tower) + Save Slot + Auto Speed + Auto Start (jeda 5 detik)
-  + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay + Auto Pickup (jalan ke item)
+  + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay
+  + Auto Pickup (LARI ke item, hanya drop dari musuh yang dibunuh)
   UI otomatis minimize saat pertama di-execute
-  (v3.9: struktur kode dirapikan agar tidak melewati batas 200 variabel lokal Luau)
 ]]
 
 if not game:IsLoaded() then game.Loaded:Wait() end
@@ -49,11 +49,16 @@ local CFG = {
 
 -- pengaturan pickup (boleh diubah)
 local PK = {
-	REACH = 2,
-	MAX_AGE = 60,
-	FIND_TIMEOUT = 8,
-	MAX_TRY = 4,
-	WALK_TIMEOUT = 25,
+	REACH = 2,           -- jarak (studs) dianggap sudah sampai di item
+	MAX_AGE = 60,        -- detik, item lebih lama dari ini dianggap kadaluarsa
+	FIND_TIMEOUT = 8,    -- detik mencari item fisik di workspace
+	MAX_TRY = 4,         -- percobaan datangi item yang sama
+	WALK_TIMEOUT = 25,   -- detik maksimal sekali jalan
+	RUN_SPEED = 32,      -- kecepatan lari saat mengejar item (normal 16)
+	LAND_TIME = 0.5,     -- detik item harus diam (sudah mendarat) sebelum diambil
+	LAND_TIMEOUT = 12,   -- detik maksimal menunggu item mendarat
+	STRICT = true,       -- true: hanya ambil item yang cocok dengan musuh yang dibunuh
+	ENEMY_RADIUS = 45,   -- jarak (studs) maksimal item dari posisi musuh yang mati
 }
 
 local DIFFS = { "Easy", "Medium", "Hard", "Nightmare" }
@@ -1377,13 +1382,17 @@ do
 	end)
 end
 
------------------------------------------------------------------- AUTO PICKUP (karakter jalan ke item)
+------------------------------------------------------------------ AUTO PICKUP (LARI ke item; hanya drop dari musuh yang dibunuh)
 do
 	local openDrops = {}
 	local assigned = {}
 	local recentAdds = {}
-	local pickStat = { ok = 0, fail = 0 }
+	local pickStat = { ok = 0, fail = 0, skip = 0 }
 	local itemConnected = {}
+	local deaths, deathCount = {}, 0
+	local enemyTracked = setmetatable({}, { __mode = "k" })
+	local verifyYes, verifyNo, strictOff = 0, 0, false
+	local baseSpeed = nil
 
 	local function posOf(inst)
 		if inst:IsA("BasePart") then return inst.Position end
@@ -1402,8 +1411,81 @@ do
 		return false
 	end
 
+	local function getHum()
+		local c = LP.Character
+		local h = c and c:FindFirstChildOfClass("Humanoid")
+		local r = c and c:FindFirstChild("HumanoidRootPart")
+		if h and r and h.Health > 0 then return h, r end
+	end
+
+	-- ---- LARI: naikkan WalkSpeed saat mengejar item, kembalikan setelah selesai
+	local function setRun(on)
+		local c = LP.Character
+		local h = c and c:FindFirstChildOfClass("Humanoid")
+		if not h then return end
+		if on then
+			if h.WalkSpeed < PK.RUN_SPEED then
+				if not baseSpeed then baseSpeed = h.WalkSpeed end
+				h.WalkSpeed = PK.RUN_SPEED
+			end
+		elseif baseSpeed then
+			h.WalkSpeed = baseSpeed
+			baseSpeed = nil
+		end
+	end
+	X.restoreRun = function() pcall(setRun, false) end
+
+	-- ---- PELACAK MUSUH YANG MATI (Humanoid.Died atau model musuh hilang)
+	local function trackEnemy(h)
+		if enemyTracked[h] then return end
+		local model = h.Parent
+		if not model or not model:IsA("Model") then return end
+		if Players:GetPlayerFromCharacter(model) then return end
+		local tf = getFolder()
+		if tf and model:IsDescendantOf(tf) then return end
+		enemyTracked[h] = true
+		local function mark()
+			if not alive or enemyTracked[h] ~= true then return end
+			enemyTracked[h] = "done"
+			local p = getPos(model)
+			if p then
+				deaths[#deaths + 1] = { p = p, t = os.clock() }
+				deathCount += 1
+				if #deaths > 200 then table.remove(deaths, 1) end
+			end
+		end
+		h.Died:Connect(mark)
+		model.AncestryChanged:Connect(function(_, par)
+			if not par then mark() end
+		end)
+	end
+
+	X.scanEnemies = function()
+		local list = workspace:GetDescendants()
+		for i, d in ipairs(list) do
+			if not alive then return end
+			if d:IsA("Humanoid") then pcall(trackEnemy, d) end
+			if i % 3000 == 0 then task.wait() end
+		end
+	end
+
+	-- true = ada musuh mati dekat item sesaat sebelum drop | false = tidak ada | nil = pelacak tidak punya data
+	local function confirmEnemy(p, born)
+		if deathCount == 0 then return nil end
+		for i = #deaths, 1, -1 do
+			local d = deaths[i]
+			if d.t < born - 8 then break end
+			if d.t <= born + 2 and (d.p - p).Magnitude <= PK.ENEMY_RADIUS then return true end
+		end
+		return false
+	end
+
 	X.onWsAdded = function(inst)
 		if not alive then return end
+		if inst:IsA("Humanoid") then
+			pcall(trackEnemy, inst)
+			return
+		end
 		if inst:IsA("BasePart") or inst:IsA("Model") then
 			recentAdds[#recentAdds + 1] = { inst = inst, t = os.clock() }
 			if #recentAdds > 400 then table.remove(recentAdds, 1) end
@@ -1448,10 +1530,17 @@ do
 	end
 
 	local function markFail(t, why)
-		if t.failed then return end
+		if t.failed or t.skipped then return end
 		t.failed = true
 		pickStat.fail += 1
 		log(("PICKUP GAGAL: %s (%s)"):format(t.name, why))
+	end
+
+	local function skipItem(t, why)
+		if t.skipped or t.failed then return end
+		t.skipped = true
+		pickStat.skip += 1
+		log(("DIABAIKAN: %s (%s)"):format(t.name, why))
 	end
 
 	local function onItemEvent(tag, id, name)
@@ -1465,7 +1554,7 @@ do
 			if t then
 				openDrops[id] = nil
 				if t.inst then assigned[t.inst] = nil end
-				if t.n > 0 and not t.failed then
+				if t.n > 0 and not t.failed and not t.skipped then
 					pickStat.ok += 1
 					log(("PICKUP OK: %s (%d percobaan)"):format(t.name, t.n))
 				end
@@ -1482,13 +1571,6 @@ do
 		if ok and c then table.insert(X.itemConns, c) end
 	end
 
-	local function getHum()
-		local c = LP.Character
-		local h = c and c:FindFirstChildOfClass("Humanoid")
-		local r = c and c:FindFirstChild("HumanoidRootPart")
-		if h and r and h.Health > 0 then return h, r end
-	end
-
 	local function followPath(h, r, p, isDone)
 		local ok, path = pcall(function()
 			return PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true })
@@ -1498,6 +1580,7 @@ do
 		if not okc or path.Status ~= Enum.PathStatus.Success then return end
 		for _, wp in ipairs(path:GetWaypoints()) do
 			if not alive or not S.autoPickup or isDone() then return end
+			setRun(true)
 			if wp.Action == Enum.PathWaypointAction.Jump then h.Jump = true end
 			local fin = false
 			local c = h.MoveToFinished:Connect(function() fin = true end)
@@ -1522,6 +1605,7 @@ do
 			if not p then return false end
 			local dx, dz = p.X - r.Position.X, p.Z - r.Position.Z
 			if math.sqrt(dx * dx + dz * dz) < PK.REACH and math.abs(p.Y - r.Position.Y) < 10 then return true end
+			setRun(true) -- pertahankan kecepatan lari (game bisa mereset WalkSpeed)
 			h:MoveTo(p)
 			if (r.Position - lastPos).Magnitude > 0.8 then
 				lastPos, lastMove = r.Position, os.clock()
@@ -1540,7 +1624,7 @@ do
 
 	local function resolveItem(t)
 		if t.inst and t.inst.Parent then return t.inst end
-		if t.inst then assigned[t.inst] = nil t.inst = nil end
+		if t.inst then assigned[t.inst] = nil t.inst = nil t.stable = nil t.lastP = nil end
 		local i = findRecent(t)
 		if not i and not t.scanned and os.clock() - t.born > 1.2 then
 			t.scanned = true
@@ -1556,9 +1640,62 @@ do
 		return t.inst
 	end
 
+	-- item siap diambil hanya jika: ketemu, sudah mendarat, dan cocok dengan musuh yang dibunuh
+	local function prepare(t, now)
+		local inst = resolveItem(t)
+		if not inst then
+			if now - t.born > PK.FIND_TIMEOUT then
+				skipItem(t, "item fisik tidak ketemu")
+			end
+			return false
+		end
+		local p = posOf(inst)
+		if not p then return false end
+
+		-- sudah mendarat? (posisi tidak banyak berubah selama LAND_TIME)
+		if t.lastP and (p - t.lastP).Magnitude < 1.5 then
+			t.stable = t.stable or now
+		else
+			t.stable = nil
+		end
+		t.lastP = p
+		if not (t.stable and now - t.stable >= PK.LAND_TIME) then
+			if now - t.born > PK.LAND_TIMEOUT then
+				skipItem(t, "item tidak mendarat / tidak diam")
+			end
+			return false
+		end
+
+		-- verifikasi: drop dari musuh yang dibunuh
+		if t.verdict == nil then
+			local v = confirmEnemy(p, t.born)
+			if v == nil then
+				t.verdict = "na"
+			elseif v then
+				t.verdict = "ok"
+				verifyYes += 1
+			else
+				verifyNo += 1
+				if PK.STRICT and not strictOff then
+					if verifyYes == 0 and verifyNo >= 3 then
+						strictOff = true
+						t.verdict = "off"
+						log("Verifikasi musuh tidak pernah cocok dengan drop: dinonaktifkan otomatis (pakai deteksi item saja).")
+					else
+						skipItem(t, "bukan drop dari musuh yang dibunuh")
+						return false
+					end
+				else
+					t.verdict = "off"
+				end
+			end
+		end
+		return true
+	end
+
 	task.spawn(function()
 		while alive do
-			task.wait(0.3)
+			task.wait(0.25)
 			local now = os.clock()
 
 			local ids = {}
@@ -1573,7 +1710,9 @@ do
 				end
 			end
 
-			if S.autoPickup then
+			if not S.autoPickup then
+				setRun(false)
+			else
 				local h, r = getHum()
 				if h then
 					local bestId, bestT, bestD
@@ -1581,16 +1720,13 @@ do
 					for id in pairs(openDrops) do ids[#ids + 1] = id end
 					for _, id in ipairs(ids) do
 						local t = openDrops[id]
-						if t and not t.failed then
-							local inst = resolveItem(t)
-							if inst then
-								local p = posOf(inst)
+						if t and not t.failed and not t.skipped then
+							if prepare(t, now) then
+								local p = t.inst and posOf(t.inst)
 								if p then
 									local d = (p - r.Position).Magnitude
 									if not bestD or d < bestD then bestId, bestT, bestD = id, t, d end
 								end
-							elseif os.clock() - t.born > PK.FIND_TIMEOUT then
-								markFail(t, "item fisik tidak ketemu")
 							end
 						end
 					end
@@ -1598,7 +1734,8 @@ do
 					if bestT and openDrops[bestId] == bestT then
 						local t, id = bestT, bestId
 						t.n += 1
-						log(("AUTO PICKUP: jalan ke %s (%d studs)"):format(t.name, bestD))
+						log(("AUTO PICKUP: lari ke %s (%d studs)%s"):format(
+							t.name, bestD, t.verdict == "ok" and " [musuh terverifikasi]" or ""))
 						if t.n > 1 then
 							local h2, r2p = getHum()
 							if h2 then
@@ -1617,6 +1754,8 @@ do
 						if openDrops[id] == t and t.n >= PK.MAX_TRY then
 							markFail(t, "tidak terclaim setelah " .. t.n .. " percobaan")
 						end
+					else
+						setRun(false)
 					end
 				end
 			end
@@ -1628,10 +1767,11 @@ do
 			task.wait(0.5)
 			local waiting = 0
 			for _, t in pairs(openDrops) do
-				if not t.failed then waiting += 1 end
+				if not t.failed and not t.skipped then waiting += 1 end
 			end
 			if X.pickLabel then
-				X.pickLabel.Text = ("Pickup: ok %d | gagal %d | menunggu %d"):format(pickStat.ok, pickStat.fail, waiting)
+				X.pickLabel.Text = ("Pickup ok %d | gagal %d | skip %d | tunggu %d"):format(
+					pickStat.ok, pickStat.fail, pickStat.skip, waiting)
 			end
 		end
 	end)
@@ -1730,7 +1870,7 @@ do
 	title.Size = UDim2.new(1, -36, 0, 30)
 	title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 	title.BorderSizePixel = 0
-	title.Text = "  Tower Macro v3.9"
+	title.Text = "  Tower Macro v4.0"
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.TextColor3 = Color3.new(1, 1, 1)
 	title.Font = Enum.Font.GothamBold
@@ -1966,9 +2106,10 @@ do
 	local t2 = mkToggle()
 	local tStart = mkToggle()
 	local tPick = mkToggle()
-	X.pickLabel = mkLabel(pa, "Pickup: ok 0 | gagal 0 | menunggu 0", UDim2.new(), UDim2.new(1, -8, 0, 18), nil, Color3.fromRGB(170, 190, 255))
+	X.pickLabel = mkLabel(pa, "Pickup ok 0 | gagal 0 | skip 0 | tunggu 0", UDim2.new(), UDim2.new(1, -8, 0, 18), nil, Color3.fromRGB(170, 190, 255))
 	X.pickLabel.Font = Enum.Font.Gotham
-	X.pickLabel.TextSize = 11
+	X.pickLabel.TextSize = 10
+	X.pickLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	X.pickLabel.LayoutOrder = nextLO()
 
 	local diagBtn = mkBtn(pa, "Diagnosa Wave / Speed (hasil di Log)", UDim2.new(), UDim2.new(1, -8, 0, 26), Color3.fromRGB(60, 90, 110))
@@ -1979,8 +2120,8 @@ do
 		task.spawn(function() pcall(diag) end)
 	end)
 
-	local hint = mkLabel(pa, "Makro mengikuti wave & waktu game (otomatis menyesuaikan speed). Teleport tower: saat Record, klik ability, pilih tujuan, klik Place. Kalau speed salah terbaca, atur manual lewat tombol Spd di tab Makro.",
-		UDim2.new(), UDim2.new(1, -8, 0, 84), nil, Color3.fromRGB(150, 150, 165))
+	local hint = mkLabel(pa, "Makro mengikuti wave & waktu game (otomatis menyesuaikan speed). Teleport tower: saat Record, klik ability, pilih tujuan, klik Place. Pickup: karakter berlari dan hanya mengambil item dari musuh yang dibunuh. Kalau speed salah terbaca, atur manual lewat tombol Spd di tab Makro.",
+		UDim2.new(), UDim2.new(1, -8, 0, 96), nil, Color3.fromRGB(150, 150, 165))
 	hint.Font = Enum.Font.Gotham
 	hint.TextSize = 10
 	hint.TextWrapped = true
@@ -1998,7 +2139,7 @@ do
 		styleToggle(t15, "Auto Speed x1.5", S.speed == 1.5)
 		styleToggle(t2, "Auto Speed x2", S.speed == 2)
 		styleToggle(tStart, "Auto Start Match", S.autoStart)
-		styleToggle(tPick, "Auto Pickup (jalan)", S.autoPickup)
+		styleToggle(tPick, "Auto Pickup (lari)", S.autoPickup)
 	end
 
 	tPlay.MouseButton1Click:Connect(function()
@@ -2039,7 +2180,7 @@ do
 	tPick.MouseButton1Click:Connect(function()
 		S.autoPickup = not S.autoPickup
 		saveSettings(); refreshToggles()
-		log("Auto Pickup: " .. (S.autoPickup and "ON (karakter akan jalan ke item)" or "OFF"))
+		log("Auto Pickup: " .. (S.autoPickup and "ON (karakter berlari ke item dari musuh yang dibunuh)" or "OFF"))
 	end)
 
 	-- Log page
@@ -2160,6 +2301,7 @@ do
 		G.TMacro_Handler2 = nil
 		G.TMacro_Handler3 = nil
 		G.TMacro_Handler4 = nil
+		if X.restoreRun then X.restoreRun() end
 		if hbConn then pcall(function() hbConn:Disconnect() end) end
 		if X.wsConn then pcall(function() X.wsConn:Disconnect() end) end
 		for _, c in ipairs(X.itemConns) do pcall(function() c:Disconnect() end) end
@@ -2205,8 +2347,9 @@ do
 	for _ in pairs(slots) do slotCount += 1 end
 	log(("Makro aktif: %d aksi | Slot tersimpan: %d"):format(#macro, slotCount))
 
-	-- pantau item baru di workspace + event ItemDrop (Drop / Taken)
+	-- pantau item baru + musuh di workspace, dan event ItemDrop (Drop / Taken)
 	X.wsConn = workspace.DescendantAdded:Connect(X.onWsAdded)
+	task.spawn(X.scanEnemies)
 	task.spawn(function()
 		local r = RS:WaitForChild("Remotes", 30)
 		if not r or not alive then return end
