@@ -1,9 +1,9 @@
 --[[
-  Tower Macro v4.0 - Delta Mobile
+  Tower Macro v4.1 - Delta Mobile
   Makro berbasis WAVE + WAKTU GAME (otomatis menyesuaikan speed x1 / x1.5 / x2)
   Record/Play (place, upgrade, sell, ability, TELEPORT tower) + Save Slot + Auto Speed + Auto Start (jeda 5 detik)
   + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay
-  + Auto Pickup (LARI ke item, hanya drop dari musuh yang dibunuh)
+  + Auto Pickup (LARI ke item, percobaan tak terbatas sampai item terambil, tanpa verifikasi musuh)
   UI otomatis minimize saat pertama di-execute
 ]]
 
@@ -50,15 +50,10 @@ local CFG = {
 -- pengaturan pickup (boleh diubah)
 local PK = {
 	REACH = 2,           -- jarak (studs) dianggap sudah sampai di item
-	MAX_AGE = 60,        -- detik, item lebih lama dari ini dianggap kadaluarsa
-	FIND_TIMEOUT = 8,    -- detik mencari item fisik di workspace
-	MAX_TRY = 4,         -- percobaan datangi item yang sama
-	WALK_TIMEOUT = 25,   -- detik maksimal sekali jalan
+	WALK_TIMEOUT = 25,   -- detik maksimal sekali jalan (setelah itu mencoba lagi, tanpa batas)
 	RUN_SPEED = 32,      -- kecepatan lari saat mengejar item (normal 16)
-	LAND_TIME = 0.5,     -- detik item harus diam (sudah mendarat) sebelum diambil
-	LAND_TIMEOUT = 12,   -- detik maksimal menunggu item mendarat
-	STRICT = true,       -- true: hanya ambil item yang cocok dengan musuh yang dibunuh
-	ENEMY_RADIUS = 45,   -- jarak (studs) maksimal item dari posisi musuh yang mati
+	LAND_TIME = 0.5,     -- detik item diam (sudah mendarat) sebelum dikejar
+	LAND_TIMEOUT = 12,   -- lewat ini item tetap dikejar walau belum diam
 }
 
 local DIFFS = { "Easy", "Medium", "Hard", "Nightmare" }
@@ -1198,6 +1193,7 @@ task.spawn(function()
 					waveStartGT = gt
 					zeroSince = nil
 					waveApprox = false
+					if X.clearDrops then X.clearDrops() end -- match baru: buang sisa item match lama
 				end
 			end
 			first = false
@@ -1382,17 +1378,15 @@ do
 	end)
 end
 
------------------------------------------------------------------- AUTO PICKUP (LARI ke item; hanya drop dari musuh yang dibunuh)
+------------------------------------------------------------------ AUTO PICKUP (LARI ke item; percobaan tak terbatas sampai terambil)
 do
 	local openDrops = {}
 	local assigned = {}
 	local recentAdds = {}
-	local pickStat = { ok = 0, fail = 0, skip = 0 }
+	local pickStat = { ok = 0, tries = 0 }
 	local itemConnected = {}
-	local deaths, deathCount = {}, 0
-	local enemyTracked = setmetatable({}, { __mode = "k" })
-	local verifyYes, verifyNo, strictOff = 0, 0, false
 	local baseSpeed = nil
+	local lastScanAt = -1e9
 
 	local function posOf(inst)
 		if inst:IsA("BasePart") then return inst.Position end
@@ -1435,57 +1429,21 @@ do
 	end
 	X.restoreRun = function() pcall(setRun, false) end
 
-	-- ---- PELACAK MUSUH YANG MATI (Humanoid.Died atau model musuh hilang)
-	local function trackEnemy(h)
-		if enemyTracked[h] then return end
-		local model = h.Parent
-		if not model or not model:IsA("Model") then return end
-		if Players:GetPlayerFromCharacter(model) then return end
-		local tf = getFolder()
-		if tf and model:IsDescendantOf(tf) then return end
-		enemyTracked[h] = true
-		local function mark()
-			if not alive or enemyTracked[h] ~= true then return end
-			enemyTracked[h] = "done"
-			local p = getPos(model)
-			if p then
-				deaths[#deaths + 1] = { p = p, t = os.clock() }
-				deathCount += 1
-				if #deaths > 200 then table.remove(deaths, 1) end
-			end
+	X.clearDrops = function()
+		local n = 0
+		local ids = {}
+		for id in pairs(openDrops) do ids[#ids + 1] = id end
+		for _, id in ipairs(ids) do
+			local t = openDrops[id]
+			if t and t.inst then assigned[t.inst] = nil end
+			openDrops[id] = nil
+			n += 1
 		end
-		h.Died:Connect(mark)
-		model.AncestryChanged:Connect(function(_, par)
-			if not par then mark() end
-		end)
-	end
-
-	X.scanEnemies = function()
-		local list = workspace:GetDescendants()
-		for i, d in ipairs(list) do
-			if not alive then return end
-			if d:IsA("Humanoid") then pcall(trackEnemy, d) end
-			if i % 3000 == 0 then task.wait() end
-		end
-	end
-
-	-- true = ada musuh mati dekat item sesaat sebelum drop | false = tidak ada | nil = pelacak tidak punya data
-	local function confirmEnemy(p, born)
-		if deathCount == 0 then return nil end
-		for i = #deaths, 1, -1 do
-			local d = deaths[i]
-			if d.t < born - 8 then break end
-			if d.t <= born + 2 and (d.p - p).Magnitude <= PK.ENEMY_RADIUS then return true end
-		end
-		return false
+		if n > 0 then log(("Match baru: %d sisa item match lama dibuang dari antrean."):format(n)) end
 	end
 
 	X.onWsAdded = function(inst)
 		if not alive then return end
-		if inst:IsA("Humanoid") then
-			pcall(trackEnemy, inst)
-			return
-		end
 		if inst:IsA("BasePart") or inst:IsA("Model") then
 			recentAdds[#recentAdds + 1] = { inst = inst, t = os.clock() }
 			if #recentAdds > 400 then table.remove(recentAdds, 1) end
@@ -1529,20 +1487,6 @@ do
 		return cands[1]
 	end
 
-	local function markFail(t, why)
-		if t.failed or t.skipped then return end
-		t.failed = true
-		pickStat.fail += 1
-		log(("PICKUP GAGAL: %s (%s)"):format(t.name, why))
-	end
-
-	local function skipItem(t, why)
-		if t.skipped or t.failed then return end
-		t.skipped = true
-		pickStat.skip += 1
-		log(("DIABAIKAN: %s (%s)"):format(t.name, why))
-	end
-
 	local function onItemEvent(tag, id, name)
 		if not alive or type(id) ~= "string" then return end
 		if tag == "Drop" then
@@ -1554,7 +1498,7 @@ do
 			if t then
 				openDrops[id] = nil
 				if t.inst then assigned[t.inst] = nil end
-				if t.n > 0 and not t.failed and not t.skipped then
+				if t.n > 0 then
 					pickStat.ok += 1
 					log(("PICKUP OK: %s (%d percobaan)"):format(t.name, t.n))
 				end
@@ -1622,75 +1566,43 @@ do
 		return false
 	end
 
-	local function resolveItem(t)
+	-- cari objek fisik item; kalau belum ketemu, dicari ulang berkala (tidak pernah menyerah)
+	local function resolveItem(t, now)
 		if t.inst and t.inst.Parent then return t.inst end
 		if t.inst then assigned[t.inst] = nil t.inst = nil t.stable = nil t.lastP = nil end
 		local i = findRecent(t)
-		if not i and not t.scanned and os.clock() - t.born > 1.2 then
-			t.scanned = true
+		if not i and now - t.born > 1.2 and now >= (t.nextScan or 0) and now - lastScanAt > 1.5 then
+			t.nextScan = now + 4
+			lastScanAt = now
 			i = scanWorkspace(t)
 		end
 		if i then
 			t.inst = i
 			assigned[i] = true
-			local p = posOf(i)
-			log(("Item ketemu: %s @ %s"):format(t.name, i:GetFullName():sub(-40)))
-			if not p then t.inst = nil assigned[i] = nil end
+			if not posOf(i) then t.inst = nil assigned[i] = nil return nil end
+			if not t.logged then
+				t.logged = true
+				log(("Item ketemu: %s @ %s"):format(t.name, i:GetFullName():sub(-40)))
+			end
 		end
 		return t.inst
 	end
 
-	-- item siap diambil hanya jika: ketemu, sudah mendarat, dan cocok dengan musuh yang dibunuh
+	-- siap dikejar: objek ketemu dan sudah mendarat (atau sudah terlalu lama menunggu)
 	local function prepare(t, now)
-		local inst = resolveItem(t)
-		if not inst then
-			if now - t.born > PK.FIND_TIMEOUT then
-				skipItem(t, "item fisik tidak ketemu")
-			end
-			return false
-		end
+		local inst = resolveItem(t, now)
+		if not inst then return false end
 		local p = posOf(inst)
 		if not p then return false end
 
-		-- sudah mendarat? (posisi tidak banyak berubah selama LAND_TIME)
 		if t.lastP and (p - t.lastP).Magnitude < 1.5 then
 			t.stable = t.stable or now
 		else
 			t.stable = nil
 		end
 		t.lastP = p
-		if not (t.stable and now - t.stable >= PK.LAND_TIME) then
-			if now - t.born > PK.LAND_TIMEOUT then
-				skipItem(t, "item tidak mendarat / tidak diam")
-			end
-			return false
-		end
-
-		-- verifikasi: drop dari musuh yang dibunuh
-		if t.verdict == nil then
-			local v = confirmEnemy(p, t.born)
-			if v == nil then
-				t.verdict = "na"
-			elseif v then
-				t.verdict = "ok"
-				verifyYes += 1
-			else
-				verifyNo += 1
-				if PK.STRICT and not strictOff then
-					if verifyYes == 0 and verifyNo >= 3 then
-						strictOff = true
-						t.verdict = "off"
-						log("Verifikasi musuh tidak pernah cocok dengan drop: dinonaktifkan otomatis (pakai deteksi item saja).")
-					else
-						skipItem(t, "bukan drop dari musuh yang dibunuh")
-						return false
-					end
-				else
-					t.verdict = "off"
-				end
-			end
-		end
-		return true
+		if t.stable and now - t.stable >= PK.LAND_TIME then return true end
+		return now - t.born > PK.LAND_TIMEOUT -- tidak diam terlalu lama: tetap kejar
 	end
 
 	task.spawn(function()
@@ -1698,34 +1610,25 @@ do
 			task.wait(0.25)
 			local now = os.clock()
 
-			local ids = {}
-			for id in pairs(openDrops) do ids[#ids + 1] = id end
-
-			for _, id in ipairs(ids) do
-				local t = openDrops[id]
-				if t and now - t.born > PK.MAX_AGE then
-					openDrops[id] = nil
-					if t.inst then assigned[t.inst] = nil end
-					if t.n > 0 then markFail(t, "kadaluarsa") end
-				end
-			end
-
 			if not S.autoPickup then
 				setRun(false)
 			else
 				local h, r = getHum()
-				if h then
+				if not h then
+					setRun(false)
+				else
+					-- pilih item: percobaan paling sedikit dulu, lalu yang terdekat (supaya tidak ada yang tertinggal)
 					local bestId, bestT, bestD
-					ids = {}
+					local ids = {}
 					for id in pairs(openDrops) do ids[#ids + 1] = id end
 					for _, id in ipairs(ids) do
 						local t = openDrops[id]
-						if t and not t.failed and not t.skipped then
-							if prepare(t, now) then
-								local p = t.inst and posOf(t.inst)
-								if p then
-									local d = (p - r.Position).Magnitude
-									if not bestD or d < bestD then bestId, bestT, bestD = id, t, d end
+						if t and prepare(t, now) then
+							local p = t.inst and posOf(t.inst)
+							if p then
+								local d = (p - r.Position).Magnitude
+								if not bestT or t.n < bestT.n or (t.n == bestT.n and d < bestD) then
+									bestId, bestT, bestD = id, t, d
 								end
 							end
 						end
@@ -1734,8 +1637,11 @@ do
 					if bestT and openDrops[bestId] == bestT then
 						local t, id = bestT, bestId
 						t.n += 1
-						log(("AUTO PICKUP: lari ke %s (%d studs)%s"):format(
-							t.name, bestD, t.verdict == "ok" and " [musuh terverifikasi]" or ""))
+						pickStat.tries += 1
+						if t.n <= 2 or t.n % 5 == 0 then
+							log(("AUTO PICKUP: lari ke %s (%d studs)%s"):format(
+								t.name, bestD, t.n > 1 and (" [percobaan " .. t.n .. "]") or ""))
+						end
 						if t.n > 1 then
 							local h2, r2p = getHum()
 							if h2 then
@@ -1749,11 +1655,9 @@ do
 							return i and i.Parent and posOf(i) or nil
 						end, function() return openDrops[id] ~= t end, PK.WALK_TIMEOUT)
 
+						-- tunggu konfirmasi server (event Taken); kalau tidak datang, coba lagi
 						local w = os.clock()
 						while alive and openDrops[id] == t and os.clock() - w < 1.5 do task.wait(0.1) end
-						if openDrops[id] == t and t.n >= PK.MAX_TRY then
-							markFail(t, "tidak terclaim setelah " .. t.n .. " percobaan")
-						end
 					else
 						setRun(false)
 					end
@@ -1766,12 +1670,10 @@ do
 		while alive do
 			task.wait(0.5)
 			local waiting = 0
-			for _, t in pairs(openDrops) do
-				if not t.failed and not t.skipped then waiting += 1 end
-			end
+			for _ in pairs(openDrops) do waiting += 1 end
 			if X.pickLabel then
-				X.pickLabel.Text = ("Pickup ok %d | gagal %d | skip %d | tunggu %d"):format(
-					pickStat.ok, pickStat.fail, pickStat.skip, waiting)
+				X.pickLabel.Text = ("Pickup ok %d | tunggu %d | percobaan %d"):format(
+					pickStat.ok, waiting, pickStat.tries)
 			end
 		end
 	end)
@@ -1870,7 +1772,7 @@ do
 	title.Size = UDim2.new(1, -36, 0, 30)
 	title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
 	title.BorderSizePixel = 0
-	title.Text = "  Tower Macro v4.0"
+	title.Text = "  Tower Macro v4.1"
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.TextColor3 = Color3.new(1, 1, 1)
 	title.Font = Enum.Font.GothamBold
@@ -2106,7 +2008,7 @@ do
 	local t2 = mkToggle()
 	local tStart = mkToggle()
 	local tPick = mkToggle()
-	X.pickLabel = mkLabel(pa, "Pickup ok 0 | gagal 0 | skip 0 | tunggu 0", UDim2.new(), UDim2.new(1, -8, 0, 18), nil, Color3.fromRGB(170, 190, 255))
+	X.pickLabel = mkLabel(pa, "Pickup ok 0 | tunggu 0 | percobaan 0", UDim2.new(), UDim2.new(1, -8, 0, 18), nil, Color3.fromRGB(170, 190, 255))
 	X.pickLabel.Font = Enum.Font.Gotham
 	X.pickLabel.TextSize = 10
 	X.pickLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -2120,7 +2022,7 @@ do
 		task.spawn(function() pcall(diag) end)
 	end)
 
-	local hint = mkLabel(pa, "Makro mengikuti wave & waktu game (otomatis menyesuaikan speed). Teleport tower: saat Record, klik ability, pilih tujuan, klik Place. Pickup: karakter berlari dan hanya mengambil item dari musuh yang dibunuh. Kalau speed salah terbaca, atur manual lewat tombol Spd di tab Makro.",
+	local hint = mkLabel(pa, "Makro mengikuti wave & waktu game (otomatis menyesuaikan speed). Teleport tower: saat Record, klik ability, pilih tujuan, klik Place. Pickup: karakter berlari ke setiap item yang drop dan mencoba terus sampai item terambil. Kalau speed salah terbaca, atur manual lewat tombol Spd di tab Makro.",
 		UDim2.new(), UDim2.new(1, -8, 0, 96), nil, Color3.fromRGB(150, 150, 165))
 	hint.Font = Enum.Font.Gotham
 	hint.TextSize = 10
@@ -2180,7 +2082,7 @@ do
 	tPick.MouseButton1Click:Connect(function()
 		S.autoPickup = not S.autoPickup
 		saveSettings(); refreshToggles()
-		log("Auto Pickup: " .. (S.autoPickup and "ON (karakter berlari ke item dari musuh yang dibunuh)" or "OFF"))
+		log("Auto Pickup: " .. (S.autoPickup and "ON (lari ke semua item, tanpa batas percobaan)" or "OFF"))
 	end)
 
 	-- Log page
@@ -2347,9 +2249,8 @@ do
 	for _ in pairs(slots) do slotCount += 1 end
 	log(("Makro aktif: %d aksi | Slot tersimpan: %d"):format(#macro, slotCount))
 
-	-- pantau item baru + musuh di workspace, dan event ItemDrop (Drop / Taken)
+	-- pantau item baru di workspace dan event ItemDrop (Drop / Taken)
 	X.wsConn = workspace.DescendantAdded:Connect(X.onWsAdded)
-	task.spawn(X.scanEnemies)
 	task.spawn(function()
 		local r = RS:WaitForChild("Remotes", 30)
 		if not r or not alive then return end
