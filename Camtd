@@ -1,15 +1,17 @@
 --[[
-  Tower Macro v3.7 - Delta Mobile
+  Tower Macro v3.9 - Delta Mobile
   Makro berbasis WAVE + WAKTU GAME (otomatis menyesuaikan speed x1 / x1.5 / x2)
-  Record/Play (place, upgrade, sell, ability) + Save Slot + Auto Speed + Auto Start (jeda 5 detik)
+  Record/Play (place, upgrade, sell, ability, TELEPORT tower) + Save Slot + Auto Speed + Auto Start (jeda 5 detik)
   + Auto Play (rejoin) + Auto Vote Difficulty + Auto Replay + Auto Pickup (jalan ke item)
   UI otomatis minimize saat pertama di-execute
+  (v3.9: struktur kode dirapikan agar tidak melewati batas 200 variabel lokal Luau)
 ]]
 
 if not game:IsLoaded() then game.Loaded:Wait() end
 if getgenv and getgenv().TMacro_Destroy then pcall(getgenv().TMacro_Destroy) end
 local G = getgenv()
-G.TMacro_Handler2 = nil -- matikan handler versi lama
+G.TMacro_Handler2 = nil
+G.TMacro_Handler3 = nil
 
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
@@ -34,6 +36,8 @@ local CFG = {
 	AUTOPLAY_DELAY = 3,
 	REPLAY_DELAY = 3,
 	START_DELAY = 5, -- jeda (detik) sebelum Auto Start mengirim ReadyUp
+	TP_WINDOW = 20,  -- detik menunggu tujuan teleport setelah ability diklik
+	TP_MAX_TRY = 8,  -- percobaan playback teleport sebelum dilewati
 	RESULT_TEXTS = {
 		["VICTORY"] = true, ["DEFEAT"] = true, ["GAME OVER"] = true,
 		["YOU WIN"] = true, ["YOU LOSE"] = true,
@@ -59,8 +63,13 @@ local TRACK = {
 	RequestTowerUpgrade = "upgrade",
 	RequestTowerSell = "sell",
 	UpdateAbilityAutoUse = "ability",
+	RequestTowerAbility = "tpability",
 }
 local REMOTE_OF = { place = "RequestPlacement", upgrade = "RequestTowerUpgrade", sell = "RequestTowerSell" }
+local FOLLOW_IGNORE = {
+	SpeedToggle = true, ItemDrop = true, ReadyUp = true,
+	CastDifficultyVote = true, ResultsAction = true,
+}
 
 local alive = true
 local mode = "idle"
@@ -75,15 +84,18 @@ local S = {
 }
 
 -- ===== WAKTU GAME (detik setara speed x1) =====
-local gt = 0                 -- jam game: bertambah = waktu nyata x speed
-local curSpeed = 1           -- speed game terdeteksi
-local speedSeen = false      -- speed berhasil terbaca / diatur manual
-local curWave = 0            -- wave saat ini (0 = belum mulai / lobby)
-local waveStartGT = 0        -- jam game saat wave ini dimulai
-local waveSeen = false       -- label WAVE pernah ditemukan
-local waveApprox = false     -- awal wave diperkirakan (skrip dijalankan di tengah wave)
-local recStartGT = 0         -- jam game saat Record dimulai
-local playStartGT = 0        -- jam game saat Play dimulai
+local gt = 0
+local curSpeed = 1
+local speedSeen = false
+local curWave = 0
+local waveStartGT = 0
+local waveSeen = false
+local waveApprox = false
+local recStartGT = 0
+local playStartGT = 0
+
+-- tabel pertukaran antar blok (hemat variabel lokal)
+local X = { itemConns = {}, resultConns = {} }
 
 local function isGuid(s)
 	return type(s) == "string" and s:match("^%x+%-%x+%-%x+%-%x+%-%x+$") ~= nil
@@ -130,6 +142,24 @@ local function log(msg)
 	end)
 end
 
+local function summ(v)
+	local t = typeof(v)
+	if t == "string" then
+		return '"' .. v:sub(1, 10) .. '"'
+	elseif t == "Vector3" then
+		return ("V3(%.0f,%.0f,%.0f)"):format(v.X, v.Y, v.Z)
+	elseif t == "CFrame" then
+		local p = v.Position
+		return ("CF(%.0f,%.0f,%.0f)"):format(p.X, p.Y, p.Z)
+	end
+	return tostring(v):sub(1, 12)
+end
+local function summArgs(a)
+	local p = {}
+	for i = 1, math.min(a.n or #a, 6) do p[i] = summ(a[i]) end
+	return table.concat(p, " | ")
+end
+
 ------------------------------------------------------------------ FILES
 local function writeJson(file, data)
 	if writefile then pcall(function() writefile(file, HttpService:JSONEncode(data)) end) end
@@ -147,44 +177,48 @@ local function saveCurrent() writeJson(CFG.CUR_FILE, macro) end
 local function saveSlots() writeJson(CFG.SLOT_FILE, slots) end
 
 ------------------------------------------------------------------ CASH
-local cashObj, cashLabel, guiCash
-local function matchCash(n)
-	n = n:lower()
-	for _, k in ipairs(CFG.CASH_NAMES) do if n == k then return true end end
-end
-local function findCash()
-	local ls = LP:FindFirstChild("leaderstats")
-	if ls then
-		for _, v in ipairs(ls:GetChildren()) do
-			if v:IsA("ValueBase") and matchCash(v.Name) then return v end
+local cashLabel
+local getCash
+do
+	local cashObj, guiCash
+	local function matchCash(n)
+		n = n:lower()
+		for _, k in ipairs(CFG.CASH_NAMES) do if n == k then return true end end
+	end
+	local function findCash()
+		local ls = LP:FindFirstChild("leaderstats")
+		if ls then
+			for _, v in ipairs(ls:GetChildren()) do
+				if v:IsA("ValueBase") and matchCash(v.Name) then return v end
+			end
+		end
+		for _, v in ipairs(LP:GetDescendants()) do
+			if v:IsA("ValueBase") and matchCash(v.Name) and type(v.Value) == "number" then return v end
 		end
 	end
-	for _, v in ipairs(LP:GetDescendants()) do
-		if v:IsA("ValueBase") and matchCash(v.Name) and type(v.Value) == "number" then return v end
-	end
-end
-local function getCash()
-	if not cashObj or not cashObj.Parent then cashObj = findCash() end
-	if cashObj then return tonumber(cashObj.Value) end
-	for _, k in ipairs(CFG.CASH_NAMES) do
-		local a = LP:GetAttribute(k) or LP:GetAttribute(k:sub(1, 1):upper() .. k:sub(2))
-		if a then return tonumber(a) end
-	end
-	if not guiCash or not guiCash.Parent then
-		local pg = LP:FindFirstChild("PlayerGui")
-		if pg then
-			for _, v in ipairs(pg:GetDescendants()) do
-				if v:IsA("TextLabel") and matchCash(v.Name) and v.Text:match("%d") then
-					guiCash = v break
+	getCash = function()
+		if not cashObj or not cashObj.Parent then cashObj = findCash() end
+		if cashObj then return tonumber(cashObj.Value) end
+		for _, k in ipairs(CFG.CASH_NAMES) do
+			local a = LP:GetAttribute(k) or LP:GetAttribute(k:sub(1, 1):upper() .. k:sub(2))
+			if a then return tonumber(a) end
+		end
+		if not guiCash or not guiCash.Parent then
+			local pg = LP:FindFirstChild("PlayerGui")
+			if pg then
+				for _, v in ipairs(pg:GetDescendants()) do
+					if v:IsA("TextLabel") and matchCash(v.Name) and v.Text:match("%d") then
+						guiCash = v break
+					end
 				end
 			end
 		end
+		if guiCash then
+			local digits = guiCash.Text:gsub("[^%d]", "")
+			return tonumber(digits)
+		end
+		return nil
 	end
-	if guiCash then
-		local digits = guiCash.Text:gsub("[^%d]", "")
-		return tonumber(digits)
-	end
-	return nil
 end
 
 ------------------------------------------------------------------ TOWER HELPERS
@@ -280,6 +314,23 @@ local function eventByName(name)
 	return r and r:FindFirstChild(name)
 end
 
+local findRemote
+do
+	local remCache = {}
+	findRemote = function(name)
+		local c = remCache[name]
+		if c and c.Parent then return c end
+		local r = RS:FindFirstChild("Remotes")
+		if not r then return nil end
+		for _, d in ipairs(r:GetDescendants()) do
+			if d.Name == name and (d:IsA("RemoteEvent") or d:IsA("RemoteFunction")) then
+				remCache[name] = d
+				return d
+			end
+		end
+	end
+end
+
 ------------------------------------------------------------------ COUNT LABEL
 local countLabel
 local function refreshCount()
@@ -289,7 +340,7 @@ local function refreshCount()
 		if a.type == "place" then p += 1
 		elseif a.type == "upgrade" then u += 1
 		elseif a.type == "sell" then s += 1
-		elseif a.type == "ability" then ab += 1 end
+		elseif a.type == "ability" or a.type == "tpability" then ab += 1 end
 	end
 	countLabel.Text = ("P:%d U:%d S:%d A:%d"):format(p, u, s, ab)
 end
@@ -297,7 +348,10 @@ end
 ------------------------------------------------------------------ RECORD
 local seqCounter, nextFlush, pending = 0, 1, {}
 local knownIds, nameById, liveById = {}, {}, {}
+local posNow, instById = {}, {}
 local queue = {}
+local watch = nil
+local finalizeWatch
 
 local function flush()
 	while pending[nextFlush] ~= nil do
@@ -315,6 +369,7 @@ local function register(pid, rid, guid, inst)
 	if guid and guid ~= rid then knownIds[guid] = { pid = pid, kind = { t = "guid" } } end
 	if inst then
 		claimed[inst] = true
+		instById[pid] = inst
 		for _, k in ipairs(keysOf(inst)) do
 			if type(k.key) == "string" and k.key ~= rid and k.key ~= guid then
 				if knownIds[k.key] then
@@ -327,19 +382,20 @@ local function register(pid, rid, guid, inst)
 	end
 end
 
-local function resolve(X)
-	local info = knownIds[X]
+local function resolve(Xid)
+	local info = knownIds[Xid]
 	if info and not info.ambiguous then return info.pid, info.kind end
 	local f = getFolder()
 	if f then
 		for _, inst in ipairs(f:GetChildren()) do
 			for _, k in ipairs(keysOf(inst)) do
-				if k.key == X then
+				if k.key == Xid then
 					local p = getPos(inst)
 					if p then
 						local best, bd
 						for pid, e in pairs(liveById) do
-							local d = (Vector3.new(e.x, 0, e.z) - Vector3.new(p.X, 0, p.Z)).Magnitude
+							local pn = posNow[pid] or { x = e.x, z = e.z }
+							local d = (Vector3.new(pn.x, 0, pn.z) - Vector3.new(p.X, 0, p.Z)).Magnitude
 							if not bd or d < bd then best, bd = pid, d end
 						end
 						if best and bd < CFG.MATCH_DIST then return best, k.kind end
@@ -350,22 +406,207 @@ local function resolve(X)
 	end
 end
 
-local function handleRecorded(kind, seq, args, ret, cashBefore, countBefore, snap, tw, tt, tg)
+local function findTowerInst(Xid)
+	local f = getFolder()
+	if f then
+		for _, inst in ipairs(f:GetChildren()) do
+			for _, k in ipairs(keysOf(inst)) do
+				if k.key == Xid then return inst end
+			end
+		end
+	end
+end
+
+------------------------------------------------------------------ TELEPORT (serialisasi + pengawasan tujuan)
+local function hasVec(args)
+	for i = 1, args.n or #args do
+		local t = typeof(args[i])
+		if t == "Vector3" or t == "CFrame" then return true end
+	end
+	return false
+end
+
+local function destOf(args)
+	for i = 1, args.n or #args do
+		local v = args[i]
+		if typeof(v) == "Vector3" then return v end
+		if typeof(v) == "CFrame" then return v.Position end
+	end
+end
+
+local function serVal(v)
+	local t = typeof(v)
+	if t == "string" then
+		if isGuid(v) then
+			local pid = resolve(v)
+			if pid then return { __t = "tower", id = pid } end
+			return { __t = "guid" }
+		end
+		return v
+	elseif t == "number" then
+		local ok, now = pcall(function() return workspace:GetServerTimeNow() end)
+		if ok and math.abs(v - now) < 600 then return { __t = "time" } end
+		return v
+	elseif t == "boolean" then
+		return v
+	elseif t == "Vector3" then
+		return { __t = "v3", x = v.X, y = v.Y, z = v.Z }
+	elseif t == "CFrame" then
+		return { __t = "cf", c = { v:GetComponents() } }
+	end
+	return { __t = "nil" }
+end
+
+local function serArgs(args)
+	local out = {}
+	for i = 1, args.n or #args do out[i] = serVal(args[i]) end
+	return out
+end
+
+local function addStep(remote, method, args)
+	if not watch then return end
+	if hasVec(args) then
+		table.insert(watch.steps, { remote = remote, method = method, args = args })
+		watch.lastStep = os.clock()
+		log(("TELEPORT: tujuan tertangkap via %s"):format(remote))
+	elseif watch.diag < 6 then
+		watch.diag += 1
+		log(("  follow-up %s: %s"):format(remote, summArgs(args)))
+	end
+end
+
+local function processTp(it)
+	local args = it.args
+	-- panggilan RequestTowerAbility yang membawa koordinat = tujuan teleport
+	if watch and hasVec(args) then
+		addStep("RequestTowerAbility", "InvokeServer", args)
+		pending[it.seq] = false
+		flush()
+		return
+	end
+	if watch then pcall(finalizeWatch, watch) end
+
+	local Xid = args[1]
+	if it.ret == false then
+		log(("SKIP gagal ability %s (tidak dicatat)"):format(tostring(args[2])))
+		pending[it.seq] = false
+		flush()
+		return
+	end
+	local pid = resolve(Xid)
+	if not pid then
+		log(("DILEWATI ability %s: tower tidak dikenal id=%s"):format(tostring(args[2]), tostring(Xid)))
+		pending[it.seq] = false
+		flush()
+		return
+	end
+	local inst = instById[pid]
+	if not (inst and inst.Parent) then inst = findTowerInst(Xid) end
+	watch = {
+		seq = it.seq, pid = pid, args = args, inst = inst,
+		posBefore = inst and getPos(inst) or nil,
+		steps = {}, t0 = os.clock(), lastStep = 0, diag = 0,
+		tw = it.tw, tt = it.tt, tg = it.tg,
+	}
+	G.TMacro_Watching = true
+	log(("TELEPORT: ability '%s' pada %s. Pilih tujuan lalu klik Place (menunggu maks %ds)..."):format(
+		tostring(args[2]), tostring(nameById[pid]), CFG.TP_WINDOW))
+end
+
+finalizeWatch = function(w)
+	if watch ~= w then return end
+	watch = nil
+	G.TMacro_Watching = false
+
+	local moved, newPos = false, nil
+	if w.inst and w.inst.Parent then
+		newPos = getPos(w.inst)
+		if newPos and w.posBefore and (newPos - w.posBefore).Magnitude > 1.5 then moved = true end
+	end
+
+	local steps = { { remote = "RequestTowerAbility", method = "InvokeServer", a = serArgs(w.args) } }
+	for _, s in ipairs(w.steps) do
+		steps[#steps + 1] = { remote = s.remote, method = s.method, a = serArgs(s.args) }
+	end
+
+	local entry = stamp({
+		type = "tpability", id = w.pid, name = nameById[w.pid],
+		ability = tostring(w.args[2]), steps = steps,
+	}, w.tw, w.tt, w.tg)
+
+	local dest
+	for _, s in ipairs(w.steps) do dest = dest or destOf(s.args) end
+	if moved and newPos then
+		posNow[w.pid] = { x = newPos.X, z = newPos.Z }
+	elseif dest then
+		posNow[w.pid] = { x = dest.X, z = dest.Z }
+	end
+
+	local tstr = ("W%d +%.1fs"):format(w.tw or 0, math.max(0, w.tt or 0))
+	if #w.steps > 0 then
+		log(("REC teleport %s -> %s [%s] (%d langkah)"):format(
+			tostring(nameById[w.pid]), dest and summ(dest) or "?", tstr, #steps))
+	elseif moved then
+		log(("PERINGATAN: %s berpindah tapi remote tujuan TIDAK tertangkap; hanya ability yang tercatat. Kirim log ini ke saya."):format(tostring(nameById[w.pid])))
+	else
+		log(("REC ability '%s' %s (tanpa tujuan) [%s]"):format(tostring(w.args[2]), tostring(nameById[w.pid]), tstr))
+	end
+
+	pending[w.seq] = entry
+	flush()
+end
+
+-- pantau batas waktu tujuan teleport
+task.spawn(function()
+	while alive do
+		task.wait(0.2)
+		local w = watch
+		if w then
+			local now = os.clock()
+			local done = false
+			if #w.steps > 0 and now - w.lastStep > 1.0 then
+				done = true
+			elseif now - w.t0 > CFG.TP_WINDOW then
+				done = true
+			elseif #w.steps == 0 and w.inst and w.inst.Parent and w.posBefore then
+				local p = getPos(w.inst)
+				if p and (p - w.posBefore).Magnitude > 1.5 then
+					w.movedAt = w.movedAt or now
+					if now - w.movedAt > 1.5 then done = true end
+				end
+			end
+			if done then
+				local ok, err = pcall(finalizeWatch, w)
+				if not ok then
+					log("ERROR teleport: " .. tostring(err))
+					if pending[w.seq] == nil then pending[w.seq] = false end
+					pcall(flush)
+				end
+			end
+		end
+	end
+end)
+
+------------------------------------------------------------------ RECORD (aksi biasa)
+local function handleRecorded(it)
+	local kind, seq, args, ret = it.kind, it.seq, it.args, it.ret
+	local cashBefore, countBefore, snap = it.cashBefore, it.countBefore, it.snap
+	local tw, tt, tg = it.tw, it.tt, it.tg
 	local tstr = ("W%d +%.1fs"):format(tw or 0, math.max(0, tt or 0))
 
 	-- ABILITY (FireServer: towerId, abilityName)
 	if kind == "ability" then
-		local X, ab = args[1], args[2]
+		local Xid, ab = args[1], args[2]
 		log(("TANGKAP ability %s"):format(tostring(ab)))
 		local entry = false
-		local pid, kd = resolve(X)
+		local pid, kd = resolve(Xid)
 		if pid then
 			local pe = liveById[pid]
 			if pe and not pe.keyKind then pe.keyKind = kd end
 			entry = stamp({ type = "ability", id = pid, name = nameById[pid], ability = tostring(ab) }, tw, tt, tg)
 			log(("REC ability '%s' -> %s [%s]"):format(tostring(ab), tostring(nameById[pid]), tstr))
 		else
-			log(("DILEWATI ability %s: tower tidak dikenal id=%s"):format(tostring(ab), tostring(X)))
+			log(("DILEWATI ability %s: tower tidak dikenal id=%s"):format(tostring(ab), tostring(Xid)))
 		end
 		pending[seq] = entry
 		flush()
@@ -393,19 +634,22 @@ local function handleRecorded(kind, seq, args, ret, cashBefore, countBefore, sna
 				}, tw, tt, tg)
 				nameById[pid] = name
 				liveById[pid] = entry
+				posNow[pid] = { x = pos.X, z = pos.Z }
 				register(pid, rid, type(guid) == "string" and guid or nil, inst)
 				log(("REC place %s (%.1f, %.1f, %.1f) cost=%s [%s]"):format(
 					tostring(name), pos.X, pos.Y, pos.Z, fmt(cost), tstr))
 			else
 				log(("SKIP gagal place %s (tidak dicatat)"):format(tostring(name)))
+				-- bisa jadi ini tombol Place milik teleport (tower dipindah, bukan ditambah)
+				if watch then addStep("RequestPlacement", "InvokeServer", args) end
 			end
 		end
 	else
-		local X = args[1]
+		local Xid = args[1]
 		if ok then
-			local pid, kd = resolve(X)
+			local pid, kd = resolve(Xid)
 			if not pid then
-				log(("DILEWATI %s: tower tidak dikenal id=%s"):format(kind, tostring(X)))
+				log(("DILEWATI %s: tower tidak dikenal id=%s"):format(kind, tostring(Xid)))
 			else
 				task.wait(0.15)
 				local after = getCash()
@@ -429,36 +673,61 @@ local function handleRecorded(kind, seq, args, ret, cashBefore, countBefore, sna
 end
 
 -- Handler jalan di thread game: HANYA ambil data & masukkan ke antrean
-G.TMacro_Handler3 = function(self, method, call, ...)
+G.TMacro_Handler4 = function(self, method, call, ...)
 	if not alive or mode ~= "record" then return call(...) end
-	local kind = TRACK[self.Name]
-	if not kind then return call(...) end
+	local name = self.Name
+	local kind = TRACK[name]
+	if not kind then
+		if G.TMacro_Watching and not FOLLOW_IGNORE[name] then
+			queue[#queue + 1] = { k = "follow", remote = name, method = method, args = table.pack(...) }
+		end
+		return call(...)
+	end
 	local args = table.pack(...)
 	seqCounter += 1
 	local seq = seqCounter
-	-- catat wave & waktu game saat aksi dilakukan
 	local tw, tt, tg = curWave, gt - waveStartGT, gt - recStartGT
 	local okp, cashBefore, countBefore, snap = pcall(function()
 		return getCash(), towerCount(), snapshot()
 	end)
 	if not okp then cashBefore, countBefore, snap = nil, nil, {} end
 	local res = table.pack(call(...))
-	table.insert(queue, table.pack(kind, seq, args, res[1], cashBefore, countBefore, snap, tw, tt, tg))
+	queue[#queue + 1] = {
+		k = "track", kind = kind, seq = seq, args = args, ret = res[1],
+		cashBefore = cashBefore, countBefore = countBefore, snap = snap,
+		tw = tw, tt = tt, tg = tg,
+	}
 	return table.unpack(res, 1, res.n)
 end
 
+-- Worker di thread skrip (aman untuk Instance.new / log)
 task.spawn(function()
 	while alive do
 		local it = table.remove(queue, 1)
 		if it then
-			task.spawn(function()
-				local ok, err = pcall(handleRecorded, table.unpack(it, 1, it.n))
-				if not ok then
-					log("ERROR catat: " .. tostring(err))
-					if pending[it[2]] == nil then pending[it[2]] = false end
-					pcall(flush)
+			local ok, err = pcall(function()
+				if it.k == "follow" then
+					addStep(it.remote, it.method, it.args)
+				elseif it.kind == "tpability" then
+					processTp(it)
+				else
+					task.spawn(function()
+						local ok2, err2 = pcall(handleRecorded, it)
+						if not ok2 then
+							log("ERROR catat: " .. tostring(err2))
+							if pending[it.seq] == nil then pending[it.seq] = false end
+							pcall(flush)
+						end
+					end)
 				end
 			end)
+			if not ok then
+				log("ERROR catat: " .. tostring(err))
+				if it.seq and pending[it.seq] == nil then
+					pending[it.seq] = false
+					pcall(flush)
+				end
+			end
 		else
 			task.wait(0.05)
 		end
@@ -466,7 +735,7 @@ task.spawn(function()
 end)
 
 local function installHook()
-	local key = "4:" .. tostring(game.JobId)
+	local key = "5:" .. tostring(game.JobId)
 	if G.TMacro_HookKey == key then return true end
 	if not (hookmetamethod and getnamecallmethod) then
 		log("ERROR: executor tidak support hookmetamethod")
@@ -476,15 +745,18 @@ local function installHook()
 	old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
 		local method = getnamecallmethod()
 		if (method == "InvokeServer" or method == "FireServer")
-			and typeof(self) == "Instance" and TRACK[self.Name] and not checkcaller() then
-			local h = G.TMacro_Handler3
-			if h then
-				local s, m = self, method
-				local call = function(...)
-					if setnamecallmethod then setnamecallmethod(m) end
-					return old(s, ...)
+			and typeof(self) == "Instance" and not checkcaller() then
+			local n = self.Name
+			if TRACK[n] or (G.TMacro_Watching and not FOLLOW_IGNORE[n]) then
+				local h = G.TMacro_Handler4
+				if h then
+					local s, m = self, method
+					local call = function(...)
+						if setnamecallmethod then setnamecallmethod(m) end
+						return old(s, ...)
+					end
+					return h(self, m, call, ...)
 				end
-				return h(self, m, call, ...)
 			end
 		end
 		return old(self, ...)
@@ -494,139 +766,215 @@ local function installHook()
 end
 
 ------------------------------------------------------------------ PLAYBACK
-local idMap, placeById = {}, {}
+local refreshUI, playMacro
+do
+	local idMap, placeById = {}, {}
 
-local function targetFor(pid)
-	local m = idMap[pid]
-	if not m then return nil end
-	local pe = placeById[pid]
-	local kind = pe and pe.keyKind
-	if m.rid and (not kind or kind.t == "ret") then return m.rid end
-	if kind and kind.t == "guid" then return m.guid end
-	if kind and m.inst and m.inst.Parent then
-		local v = readKey(m.inst, kind)
-		if v then return v end
-	end
-	return m.rid or m.guid
-end
-
-local function doAction(a)
-	if a.type == "ability" then
-		local ev = eventByName("UpdateAbilityAutoUse")
-		local target = targetFor(a.id)
-		if not ev or not target then return false end
-		task.wait(0.3)
-		return (pcall(function() ev:FireServer(target, a.ability) end))
-	end
-
-	local remote = remoteByName(REMOTE_OF[a.type])
-	if not remote then return false end
-	local cashBefore, countBefore, snap = getCash(), towerCount(), snapshot()
-
-	if a.type == "place" then
-		local guid = HttpService:GenerateGUID(false):lower()
-		local ok, res = pcall(function()
-			return remote:InvokeServer(a.name, Vector3.new(a.x, a.y, a.z), a.rot or 0, guid, workspace:GetServerTimeNow())
-		end)
-		if not ok then return false end
-		if verifyAction("place", res, cashBefore, countBefore) then
-			local inst = findNew(snap, 1.5)
-			if inst then claimed[inst] = true end
-			idMap[a.id] = { guid = guid, rid = isGuid(res) and res or nil, inst = inst }
-			return true
+	local function targetFor(pid)
+		local m = idMap[pid]
+		if not m then return nil end
+		local pe = placeById[pid]
+		local kind = pe and pe.keyKind
+		if m.rid and (not kind or kind.t == "ret") then return m.rid end
+		if kind and kind.t == "guid" then return m.guid end
+		if kind and m.inst and m.inst.Parent then
+			local v = readKey(m.inst, kind)
+			if v then return v end
 		end
-		return false
+		return m.rid or m.guid
 	end
 
-	local target = targetFor(a.id)
-	if not target then return false end
-	local ok, res = pcall(function() return remote:InvokeServer(target) end)
-	if not ok then return false end
-	return verifyAction(a.type, res, cashBefore, countBefore)
-end
-
--- apakah wave & waktu game sudah sesuai dengan saat direkam?
-local function timeReached(a)
-	if a.w == nil then return true end -- rekaman lama: tanpa data waktu
-	if waveSeen or a.w == 0 then
-		if curWave > a.w then return true end
-		if curWave < a.w then return false end
-		return (gt - waveStartGT) >= (a.t or 0)
-	end
-	-- label WAVE tidak ditemukan: pakai waktu game total sejak Play
-	if a.g == nil then return true end
-	return (gt - playStartGT) >= a.g
-end
-
-local refreshUI
-local function playMacro()
-	if #macro == 0 then log("Belum ada rekaman.") mode = "idle" refreshUI() return end
-	idMap, placeById, claimed = {}, {}, {}
-	local legacy = 0
-	for _, a in ipairs(macro) do
-		if a.type == "place" then placeById[a.id] = a end
-		if a.w == nil then legacy += 1 end
-	end
-	playStartGT = gt
-	if curWave == 0 then waveStartGT = gt end
-
-	log(("PLAY mulai, %d aksi | W%d | speed x%s (timing menyesuaikan speed)"):format(#macro, curWave, tostring(curSpeed)))
-	if legacy > 0 then
-		log(("%d aksi tanpa data wave/waktu (rekaman lama): dijalankan berurutan. Record ulang untuk timing."):format(legacy))
-	end
-
-	for i, a in ipairs(macro) do
-		if mode ~= "play" or not alive then break end
-
-		if a.type ~= "place" and not idMap[a.id] then
-			log(("[%d/%d] LEWATI %s: tower %s belum ter-place"):format(i, #macro, a.type, tostring(a.name)))
-		else
-			-- 1) tunggu wave & waktu game sesuai rekaman
-			local lastLog = os.clock()
-			while mode == "play" and alive and not timeReached(a) do
-				if os.clock() - lastLog > 4 then
-					lastLog = os.clock()
-					log(("[%d/%d] tunggu W%d +%.0fs | sekarang W%d +%.0fs | x%s"):format(
-						i, #macro, a.w or 0, a.t or 0, curWave, math.max(0, gt - waveStartGT), tostring(curSpeed)))
-				end
-				task.wait(0.1)
+	local function deser(v)
+		if type(v) == "table" and v.__t then
+			local t = v.__t
+			if t == "tower" then
+				return targetFor(v.id)
+			elseif t == "v3" then
+				return Vector3.new(v.x, v.y, v.z)
+			elseif t == "cf" then
+				return CFrame.new(table.unpack(v.c))
+			elseif t == "time" then
+				return workspace:GetServerTimeNow()
+			elseif t == "guid" then
+				return HttpService:GenerateGUID(false):lower()
 			end
+			return nil
+		end
+		return v
+	end
+
+	local function callStep(st)
+		local rem = findRemote(st.remote)
+		if not rem then return false end
+		local out, n = {}, #st.a
+		for i = 1, n do out[i] = deser(st.a[i]) end
+		local ok, res
+		if st.method == "FireServer" then
+			ok = pcall(function() rem:FireServer(table.unpack(out, 1, n)) end)
+		else
+			ok, res = pcall(function() return rem:InvokeServer(table.unpack(out, 1, n)) end)
+		end
+		if not ok then return false end
+		if res == false then return false end
+		return true
+	end
+
+	local function doTeleport(a)
+		-- pastikan semua tower yang direferensikan sudah ter-place di match ini
+		for _, st in ipairs(a.steps) do
+			for _, v in ipairs(st.a) do
+				if type(v) == "table" and v.__t == "tower" and not targetFor(v.id) then return false end
+			end
+		end
+		local m = idMap[a.id]
+		local inst = m and m.inst
+		local before = (inst and inst.Parent) and getPos(inst) or nil
+
+		for _, st in ipairs(a.steps) do
+			if not callStep(st) then return false end
+			task.wait(0.25)
+		end
+
+		-- verifikasi: tower harus berpindah (hanya jika ada langkah tujuan)
+		if #a.steps > 1 and before and inst and inst.Parent then
+			local t0 = os.clock()
+			repeat
+				local p = getPos(inst)
+				if p and (p - before).Magnitude > 1 then return true end
+				task.wait(0.1)
+			until os.clock() - t0 > 2
+			return false
+		end
+		return true
+	end
+
+	local function doAction(a)
+		if a.type == "tpability" then
+			return doTeleport(a)
+		end
+
+		if a.type == "ability" then
+			local ev = eventByName("UpdateAbilityAutoUse")
+			local target = targetFor(a.id)
+			if not ev or not target then return false end
+			task.wait(0.3)
+			return (pcall(function() ev:FireServer(target, a.ability) end))
+		end
+
+		local remote = remoteByName(REMOTE_OF[a.type])
+		if not remote then return false end
+		local cashBefore, countBefore, snap = getCash(), towerCount(), snapshot()
+
+		if a.type == "place" then
+			local guid = HttpService:GenerateGUID(false):lower()
+			local ok, res = pcall(function()
+				return remote:InvokeServer(a.name, Vector3.new(a.x, a.y, a.z), a.rot or 0, guid, workspace:GetServerTimeNow())
+			end)
+			if not ok then return false end
+			if verifyAction("place", res, cashBefore, countBefore) then
+				local inst = findNew(snap, 1.5)
+				if inst then claimed[inst] = true end
+				idMap[a.id] = { guid = guid, rid = isGuid(res) and res or nil, inst = inst }
+				return true
+			end
+			return false
+		end
+
+		local target = targetFor(a.id)
+		if not target then return false end
+		local ok, res = pcall(function() return remote:InvokeServer(target) end)
+		if not ok then return false end
+		return verifyAction(a.type, res, cashBefore, countBefore)
+	end
+
+	-- apakah wave & waktu game sudah sesuai dengan saat direkam?
+	local function timeReached(a)
+		if a.w == nil then return true end
+		if waveSeen or a.w == 0 then
+			if curWave > a.w then return true end
+			if curWave < a.w then return false end
+			return (gt - waveStartGT) >= (a.t or 0)
+		end
+		if a.g == nil then return true end
+		return (gt - playStartGT) >= a.g
+	end
+
+	playMacro = function()
+		if #macro == 0 then log("Belum ada rekaman.") mode = "idle" refreshUI() return end
+		idMap, placeById, claimed = {}, {}, {}
+		local legacy = 0
+		for _, a in ipairs(macro) do
+			if a.type == "place" then placeById[a.id] = a end
+			if a.w == nil then legacy += 1 end
+		end
+		playStartGT = gt
+		if curWave == 0 then waveStartGT = gt end
+
+		log(("PLAY mulai, %d aksi | W%d | speed x%s (timing menyesuaikan speed)"):format(#macro, curWave, tostring(curSpeed)))
+		if legacy > 0 then
+			log(("%d aksi tanpa data wave/waktu (rekaman lama): dijalankan berurutan. Record ulang untuk timing."):format(legacy))
+		end
+
+		for i, a in ipairs(macro) do
 			if mode ~= "play" or not alive then break end
 
-			-- 2) eksekusi; kalau cash belum cukup, tunggu sampai berhasil (tidak lanjut sebelum sukses)
-			local waitStart, lastLog2 = os.clock(), 0
-			while mode == "play" and alive do
-				local cash = getCash()
-				local needWait = a.type ~= "sell" and a.cost and cash and cash < a.cost
-					and (os.clock() - waitStart) < CFG.PROBE_AFTER
-				if needWait then
-					if os.clock() - lastLog2 > 3 then
-						lastLog2 = os.clock()
-						log(("[%d/%d] waktu OK, tunggu cash %s/%s (%s %s)"):format(i, #macro, fmt(cash), fmt(a.cost), a.type, tostring(a.name)))
+			if a.type ~= "place" and not idMap[a.id] then
+				log(("[%d/%d] LEWATI %s: tower %s belum ter-place"):format(i, #macro, a.type, tostring(a.name)))
+			else
+				-- 1) tunggu wave & waktu game sesuai rekaman
+				local lastLog = os.clock()
+				while mode == "play" and alive and not timeReached(a) do
+					if os.clock() - lastLog > 4 then
+						lastLog = os.clock()
+						log(("[%d/%d] tunggu W%d +%.0fs | sekarang W%d +%.0fs | x%s"):format(
+							i, #macro, a.w or 0, a.t or 0, curWave, math.max(0, gt - waveStartGT), tostring(curSpeed)))
 					end
-					task.wait(0.2)
-				elseif doAction(a) then
-					if a.type == "ability" then
-						log(("[%d/%d] OK ability '%s' %s | W%d +%.0fs"):format(i, #macro, tostring(a.ability), tostring(a.name), curWave, math.max(0, gt - waveStartGT)))
+					task.wait(0.1)
+				end
+				if mode ~= "play" or not alive then break end
+
+				-- 2) eksekusi; kalau cash belum cukup, tunggu sampai berhasil
+				local waitStart, lastLog2, tries = os.clock(), 0, 0
+				while mode == "play" and alive do
+					local cash = getCash()
+					local needWait = a.type ~= "sell" and a.cost and cash and cash < a.cost
+						and (os.clock() - waitStart) < CFG.PROBE_AFTER
+					if needWait then
+						if os.clock() - lastLog2 > 3 then
+							lastLog2 = os.clock()
+							log(("[%d/%d] waktu OK, tunggu cash %s/%s (%s %s)"):format(i, #macro, fmt(cash), fmt(a.cost), a.type, tostring(a.name)))
+						end
+						task.wait(0.2)
+					elseif doAction(a) then
+						if a.type == "ability" then
+							log(("[%d/%d] OK ability '%s' %s | W%d +%.0fs"):format(i, #macro, tostring(a.ability), tostring(a.name), curWave, math.max(0, gt - waveStartGT)))
+						elseif a.type == "tpability" then
+							log(("[%d/%d] OK teleport/ability '%s' %s | W%d +%.0fs"):format(i, #macro, tostring(a.ability), tostring(a.name), curWave, math.max(0, gt - waveStartGT)))
+						else
+							log(("[%d/%d] OK %s %s | W%d +%.0fs cash=%s"):format(i, #macro, a.type, tostring(a.name), curWave, math.max(0, gt - waveStartGT), fmt(getCash())))
+						end
+						if a.type == "sell" then idMap[a.id] = nil end
+						break
 					else
-						log(("[%d/%d] OK %s %s | W%d +%.0fs cash=%s"):format(i, #macro, a.type, tostring(a.name), curWave, math.max(0, gt - waveStartGT), fmt(getCash())))
+						tries += 1
+						if a.type == "tpability" and tries >= CFG.TP_MAX_TRY then
+							log(("[%d/%d] LEWATI teleport %s: gagal %d kali (cooldown / tujuan salah?)"):format(i, #macro, tostring(a.name), tries))
+							break
+						end
+						if os.clock() - lastLog2 > 3 then
+							lastLog2 = os.clock()
+							log(("[%d/%d] gagal %s %s, coba lagi. cash=%s"):format(i, #macro, a.type, tostring(a.name), fmt(getCash())))
+						end
+						task.wait(a.type == "tpability" and 1.5 or CFG.RETRY_DELAY)
 					end
-					if a.type == "sell" then idMap[a.id] = nil end
-					break
-				else
-					if os.clock() - lastLog2 > 3 then
-						lastLog2 = os.clock()
-						log(("[%d/%d] gagal %s %s (cash kurang?), coba lagi. cash=%s"):format(i, #macro, a.type, tostring(a.name), fmt(getCash())))
-					end
-					task.wait(CFG.RETRY_DELAY)
 				end
 			end
 		end
-	end
 
-	if mode == "play" then log("PLAY selesai.") end
-	mode = "idle"
-	refreshUI()
+		if mode == "play" then log("PLAY selesai.") end
+		mode = "idle"
+		refreshUI()
+	end
 end
 
 ------------------------------------------------------------------ GUI DETECTION (wave & speed)
@@ -640,170 +988,170 @@ local function guiVisible(o)
 	return true
 end
 
-local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+local getWave, detectSpeed, diag
+do
+	local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
 
--- teks yang benar-benar tampil di layar (tanpa tag RichText)
-local function txt(o)
-	local t = o.ContentText
-	if not t or t == "" then t = o.Text end
-	return (t:gsub("<[^>]+>", ""))
-end
-
-local function center(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
-
--- ---- WAVE
-local waveSrc, nextWaveScan = nil, 0
-
-local function parseFull(t)
-	local a = t:upper():match("WAVE%s*(%d+)%s*/%s*%d+")
-	return a and tonumber(a)
-end
-
-local function scanWave()
-	local pg = LP:FindFirstChild("PlayerGui")
-	if not pg then return nil end
-	local fullVis, fullAny = nil, nil
-	local words, ratios = {}, {}
-	for _, v in ipairs(pg:GetDescendants()) do
-		if v:IsA("TextLabel") or v:IsA("TextButton") then
-			local t = txt(v)
-			if #t > 0 and #t < 40 then
-				if parseFull(t) then
-					if guiVisible(v) then fullVis = v break end
-					fullAny = fullAny or v
-				else
-					local u = trim(t:upper())
-					if u == "WAVE" then
-						words[#words + 1] = v
-					elseif u:match("^%d+%s*/%s*%d+$") then
-						ratios[#ratios + 1] = v
-					end
-				end
-			end
-		end
+	local function txt(o)
+		local t = o.ContentText
+		if not t or t == "" then t = o.Text end
+		return (t:gsub("<[^>]+>", ""))
 	end
-	if fullVis then return { obj = fullVis, mode = "full" } end
-	if fullAny then return { obj = fullAny, mode = "full" } end
-	-- label terpisah: "WAVE" dan "4/30"
-	for _, w in ipairs(words) do
-		local best, bd
-		for _, r in ipairs(ratios) do
-			local d = (center(w) - center(r)).Magnitude
-			if not bd or d < bd then best, bd = r, d end
-		end
-		if best and bd < 400 then return { obj = best, mode = "ratio" } end
-	end
-	return nil
-end
 
-local function getWave()
-	if not waveSrc or not waveSrc.obj.Parent then
-		waveSrc = nil
-		if os.clock() < nextWaveScan then return nil end
-		nextWaveScan = os.clock() + 4
-		waveSrc = scanWave()
-		if waveSrc then
-			log("Label WAVE ditemukan: " .. waveSrc.obj:GetFullName():sub(-45))
-		end
-	end
-	if not waveSrc then return nil end
-	local o = waveSrc.obj
-	if not guiVisible(o) then return 0 end
-	local t = txt(o)
-	if waveSrc.mode == "full" then return parseFull(t) or 0 end
-	local a = t:match("^%s*(%d+)%s*/")
-	return a and tonumber(a) or 0
-end
+	local function center(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
 
--- ---- SPEED
-local speedPairs, nextSpeedScan = nil, 0
+	-- ---- WAVE
+	local waveSrc, nextWaveScan = nil, 0
 
-local function scanSpeed()
-	local pg = LP:FindFirstChild("PlayerGui")
-	if not pg then return {}, {}, {} end
-	local labels, statuses = {}, {}
-	for _, v in ipairs(pg:GetDescendants()) do
-		if v:IsA("TextLabel") or v:IsA("TextButton") then
-			local t = txt(v)
-			if #t > 0 and #t < 16 then
-				local u = trim(t:upper())
-				if u == "ACTIVE" or u == "NORMAL" or u == "GET PASS" then
-					statuses[#statuses + 1] = v
-				else
-					local n = u:match("^([%d%.]+)%s*X$")
-					n = n and tonumber(n)
-					if n and n >= 0.5 and n <= 10 then
-						labels[#labels + 1] = { o = v, n = n }
-					end
-				end
-			end
-		end
+	local function parseFull(t)
+		local a = t:upper():match("WAVE%s*(%d+)%s*/%s*%d+")
+		return a and tonumber(a)
 	end
-	-- pasangkan tiap status dengan tombol kecepatan TERDEKAT di layar
-	local prs = {}
-	for _, s in ipairs(statuses) do
-		local best, bd
-		for _, l in ipairs(labels) do
-			local d = (center(s) - center(l.o)).Magnitude
-			if not bd or d < bd then best, bd = l, d end
-		end
-		if best and bd < 250 then
-			prs[#prs + 1] = { status = s, label = best.o, n = best.n }
-		end
-	end
-	return prs, labels, statuses
-end
 
-local function detectSpeed()
-	if speedPairs then
-		for _, p in ipairs(speedPairs) do
-			if not p.status.Parent or not p.label.Parent then speedPairs = nil break end
-		end
-	end
-	if not speedPairs or (#speedPairs == 0 and os.clock() > nextSpeedScan) then
-		nextSpeedScan = os.clock() + 5
-		speedPairs = scanSpeed()
-	end
-	for _, p in ipairs(speedPairs) do
-		if guiVisible(p.status) and trim(txt(p.status):upper()) == "ACTIVE" then
-			return p.n
-		end
-	end
-	return nil
-end
-
--- ---- DIAGNOSA (hasil tampil di tab Log)
-local function diag()
-	log("=== DIAGNOSA WAVE / SPEED ===")
-	local pg = LP:FindFirstChild("PlayerGui")
-	if not pg then log("PlayerGui tidak ada") return end
-
-	local w = getWave()
-	if waveSrc and waveSrc.obj.Parent then
-		log(("Wave: '%s' [%s] -> W%s"):format(txt(waveSrc.obj):sub(1, 30), waveSrc.obj:GetFullName():sub(-35), tostring(w)))
-	else
-		log("Wave: label belum ketemu. Teks yang mengandung 'WAVE':")
-		local c = 0
+	local function scanWave()
+		local pg = LP:FindFirstChild("PlayerGui")
+		if not pg then return nil end
+		local fullVis, fullAny = nil, nil
+		local words, ratios = {}, {}
 		for _, v in ipairs(pg:GetDescendants()) do
 			if v:IsA("TextLabel") or v:IsA("TextButton") then
 				local t = txt(v)
-				if t:upper():find("WAVE", 1, true) then
-					c += 1
-					log(("  '%s' [%s] tampil=%s"):format(t:sub(1, 30), v:GetFullName():sub(-35), tostring(guiVisible(v))))
-					if c >= 5 then break end
+				if #t > 0 and #t < 40 then
+					if parseFull(t) then
+						if guiVisible(v) then fullVis = v break end
+						fullAny = fullAny or v
+					else
+						local u = trim(t:upper())
+						if u == "WAVE" then
+							words[#words + 1] = v
+						elseif u:match("^%d+%s*/%s*%d+$") then
+							ratios[#ratios + 1] = v
+						end
+					end
 				end
 			end
 		end
-		if c == 0 then log("  tidak ada teks 'WAVE' di PlayerGui") end
+		if fullVis then return { obj = fullVis, mode = "full" } end
+		if fullAny then return { obj = fullAny, mode = "full" } end
+		for _, w in ipairs(words) do
+			local best, bd
+			for _, r in ipairs(ratios) do
+				local d = (center(w) - center(r)).Magnitude
+				if not bd or d < bd then best, bd = r, d end
+			end
+			if best and bd < 400 then return { obj = best, mode = "ratio" } end
+		end
+		return nil
 	end
 
-	local prs, labels, statuses = scanSpeed()
-	log(("Speed: %d tombol, %d status, %d pasangan"):format(#labels, #statuses, #prs))
-	for _, p in ipairs(prs) do
-		log(("  x%s -> status '%s' tampil=%s"):format(tostring(p.n), txt(p.status):sub(1, 12), tostring(guiVisible(p.status))))
+	getWave = function()
+		if not waveSrc or not waveSrc.obj.Parent then
+			waveSrc = nil
+			if os.clock() < nextWaveScan then return nil end
+			nextWaveScan = os.clock() + 4
+			waveSrc = scanWave()
+			if waveSrc then
+				log("Label WAVE ditemukan: " .. waveSrc.obj:GetFullName():sub(-45))
+			end
+		end
+		if not waveSrc then return nil end
+		local o = waveSrc.obj
+		if not guiVisible(o) then return 0 end
+		local t = txt(o)
+		if waveSrc.mode == "full" then return parseFull(t) or 0 end
+		local a = t:match("^%s*(%d+)%s*/")
+		return a and tonumber(a) or 0
 	end
-	log(("Terbaca: x%s | mode manual: %s | dipakai: x%s"):format(
-		tostring(detectSpeed()), (S.spdMode or 0) > 0 and ("x" .. S.spdMode) or "auto", tostring(curSpeed)))
+
+	-- ---- SPEED
+	local speedPairs, nextSpeedScan = nil, 0
+
+	local function scanSpeed()
+		local pg = LP:FindFirstChild("PlayerGui")
+		if not pg then return {}, {}, {} end
+		local labels, statuses = {}, {}
+		for _, v in ipairs(pg:GetDescendants()) do
+			if v:IsA("TextLabel") or v:IsA("TextButton") then
+				local t = txt(v)
+				if #t > 0 and #t < 16 then
+					local u = trim(t:upper())
+					if u == "ACTIVE" or u == "NORMAL" or u == "GET PASS" then
+						statuses[#statuses + 1] = v
+					else
+						local n = u:match("^([%d%.]+)%s*X$")
+						n = n and tonumber(n)
+						if n and n >= 0.5 and n <= 10 then
+							labels[#labels + 1] = { o = v, n = n }
+						end
+					end
+				end
+			end
+		end
+		local prs = {}
+		for _, s in ipairs(statuses) do
+			local best, bd
+			for _, l in ipairs(labels) do
+				local d = (center(s) - center(l.o)).Magnitude
+				if not bd or d < bd then best, bd = l, d end
+			end
+			if best and bd < 250 then
+				prs[#prs + 1] = { status = s, label = best.o, n = best.n }
+			end
+		end
+		return prs, labels, statuses
+	end
+
+	detectSpeed = function()
+		if speedPairs then
+			for _, p in ipairs(speedPairs) do
+				if not p.status.Parent or not p.label.Parent then speedPairs = nil break end
+			end
+		end
+		if not speedPairs or (#speedPairs == 0 and os.clock() > nextSpeedScan) then
+			nextSpeedScan = os.clock() + 5
+			speedPairs = scanSpeed()
+		end
+		for _, p in ipairs(speedPairs) do
+			if guiVisible(p.status) and trim(txt(p.status):upper()) == "ACTIVE" then
+				return p.n
+			end
+		end
+		return nil
+	end
+
+	-- ---- DIAGNOSA (hasil tampil di tab Log)
+	diag = function()
+		log("=== DIAGNOSA WAVE / SPEED ===")
+		local pg = LP:FindFirstChild("PlayerGui")
+		if not pg then log("PlayerGui tidak ada") return end
+
+		local w = getWave()
+		if waveSrc and waveSrc.obj.Parent then
+			log(("Wave: '%s' [%s] -> W%s"):format(txt(waveSrc.obj):sub(1, 30), waveSrc.obj:GetFullName():sub(-35), tostring(w)))
+		else
+			log("Wave: label belum ketemu. Teks yang mengandung 'WAVE':")
+			local c = 0
+			for _, v in ipairs(pg:GetDescendants()) do
+				if v:IsA("TextLabel") or v:IsA("TextButton") then
+					local t = txt(v)
+					if t:upper():find("WAVE", 1, true) then
+						c += 1
+						log(("  '%s' [%s] tampil=%s"):format(t:sub(1, 30), v:GetFullName():sub(-35), tostring(guiVisible(v))))
+						if c >= 5 then break end
+					end
+				end
+			end
+			if c == 0 then log("  tidak ada teks 'WAVE' di PlayerGui") end
+		end
+
+		local prs, labels, statuses = scanSpeed()
+		log(("Speed: %d tombol, %d status, %d pasangan"):format(#labels, #statuses, #prs))
+		for _, p in ipairs(prs) do
+			log(("  x%s -> status '%s' tampil=%s"):format(tostring(p.n), txt(p.status):sub(1, 12), tostring(guiVisible(p.status))))
+		end
+		log(("Terbaca: x%s | mode manual: %s | dipakai: x%s"):format(
+			tostring(detectSpeed()), (S.spdMode or 0) > 0 and ("x" .. S.spdMode) or "auto", tostring(curSpeed)))
+	end
 end
 
 ------------------------------------------------------------------ TRACKER WAVE / SPEED
@@ -814,7 +1162,6 @@ task.spawn(function()
 		task.wait(0.1)
 		n += 1
 		pcall(function()
-			-- speed game (tiap ~0.3 detik)
 			if n % 3 == 0 then
 				local sp
 				if (S.spdMode or 0) > 0 then
@@ -829,19 +1176,17 @@ task.spawn(function()
 				end
 			end
 
-			-- wave
 			local w = getWave()
 			if w ~= nil then waveSeen = true end
 			w = w or 0
 			if w > 0 then
 				zeroSince = nil
 				if w ~= curWave then
-					waveApprox = first -- skrip dijalankan di tengah wave: awal wave hanya perkiraan
+					waveApprox = first
 					curWave = w
 					waveStartGT = gt
 				end
 			elseif curWave > 0 then
-				-- label hilang sebentar antar wave diabaikan; kalau >4 detik berarti match baru
 				zeroSince = zeroSince or os.clock()
 				if os.clock() - zeroSince > 4 then
 					curWave = 0
@@ -855,907 +1200,441 @@ task.spawn(function()
 	end
 end)
 
------------------------------------------------------------------- AUTO SPEED
-local speedTried, speedFired, lastSpeed = 0, false, -1e9
-local function resetSpeedState() speedTried, speedFired = 0, false end
+------------------------------------------------------------------ AUTO SPEED + AUTO VOTE + AUTO START
+do
+	-- AUTO SPEED
+	local speedTried, speedFired, lastSpeed = 0, false, -1e9
+	local function resetSpeedState() speedTried, speedFired = 0, false end
+	X.resetSpeed = resetSpeedState
 
-local function fireSpeed(v)
-	local ev = eventByName("SpeedToggle")
-	if not ev then return end
-	ev:FireServer(v)
-	speedTried += 1
-	lastSpeed = os.clock()
-	log(("AUTO SPEED: kirim x%s (percobaan %d)"):format(tostring(v), speedTried))
-end
-
-task.spawn(function()
-	while alive do
-		task.wait(1.5)
-		pcall(function()
-			local want = S.speed
-			if not want or want == 0 then return end
-			local w = getWave()
-			if w == 0 then resetSpeedState() return end
-			local cur = detectSpeed()
-			if cur then
-				if math.abs(cur - want) < 0.01 then speedTried = 0 return end
-				if speedTried < 4 and os.clock() - lastSpeed > 3 then fireSpeed(want) end
-				if speedTried == 4 then
-					speedTried += 1
-					log("AUTO SPEED: server tidak menerima x" .. tostring(want) .. ", berhenti mencoba.")
-				end
-			elseif not speedFired then
-				speedFired = true
-				fireSpeed(want)
-			end
-		end)
+	local function fireSpeed(v)
+		local ev = eventByName("SpeedToggle")
+		if not ev then return end
+		ev:FireServer(v)
+		speedTried += 1
+		lastSpeed = os.clock()
+		log(("AUTO SPEED: kirim x%s (percobaan %d)"):format(tostring(v), speedTried))
 	end
-end)
 
------------------------------------------------------------------- AUTO VOTE DIFFICULTY
-local voteTries, lastVote = 0, -1e9
-
-local function fireVote()
-	local ev = eventByName("CastDifficultyVote")
-	if not ev then
-		voteTries = 99
-		log("AUTO VOTE: event CastDifficultyVote tidak ketemu (bukan di match?)")
-		return
-	end
-	ev:FireServer(S.difficulty)
-	voteTries += 1
-	lastVote = os.clock()
-	log(("AUTO VOTE: %s (percobaan %d)"):format(S.difficulty, voteTries))
-end
-
-task.spawn(function()
-	while alive do
-		task.wait(1)
-		if S.autoVote then
+	task.spawn(function()
+		while alive do
+			task.wait(1.5)
 			pcall(function()
+				local want = S.speed
+				if not want or want == 0 then return end
 				local w = getWave()
-				if w and w > 0 then voteTries = 0 return end
-				if voteTries < 3 and os.clock() - lastVote > 4 then fireVote() end
-			end)
-		end
-	end
-end)
-
------------------------------------------------------------------- AUTO START (jeda 5 detik)
-local lastReady = -1e9
-local startWaitFrom = nil
-task.spawn(function()
-	while alive do
-		task.wait(1)
-		if S.autoStart then
-			pcall(function()
-				local w = getWave()
-				local inLobby = (w == nil or w == 0)
-				if not inLobby then startWaitFrom = nil return end
-
-				if not startWaitFrom then
-					startWaitFrom = os.clock()
-					log(("AUTO START: menunggu %d detik sebelum ReadyUp..."):format(CFG.START_DELAY))
-				end
-				if os.clock() - startWaitFrom < CFG.START_DELAY then return end
-
-				if S.autoVote and voteTries == 0 then return end
-				if S.autoVote and voteTries < 99 and os.clock() - lastVote < 3 then return end
-
-				local gap = (w == nil) and 30 or 6
-				if os.clock() - lastReady > gap then
-					local ev = eventByName("ReadyUp")
-					if ev then
-						ev:FireServer()
-						lastReady = os.clock()
-						log("AUTO START: ReadyUp dikirim")
+				if w == 0 then resetSpeedState() return end
+				local cur = detectSpeed()
+				if cur then
+					if math.abs(cur - want) < 0.01 then speedTried = 0 return end
+					if speedTried < 4 and os.clock() - lastSpeed > 3 then fireSpeed(want) end
+					if speedTried == 4 then
+						speedTried += 1
+						log("AUTO SPEED: server tidak menerima x" .. tostring(want) .. ", berhenti mencoba.")
 					end
+				elseif not speedFired then
+					speedFired = true
+					fireSpeed(want)
 				end
 			end)
-		else
-			startWaitFrom = nil
 		end
+	end)
+
+	-- AUTO VOTE DIFFICULTY
+	local voteTries, lastVote = 0, -1e9
+	X.resetVote = function() voteTries = 0 end
+
+	local function fireVote()
+		local ev = eventByName("CastDifficultyVote")
+		if not ev then
+			voteTries = 99
+			log("AUTO VOTE: event CastDifficultyVote tidak ketemu (bukan di match?)")
+			return
+		end
+		ev:FireServer(S.difficulty)
+		voteTries += 1
+		lastVote = os.clock()
+		log(("AUTO VOTE: %s (percobaan %d)"):format(S.difficulty, voteTries))
 	end
-end)
+
+	task.spawn(function()
+		while alive do
+			task.wait(1)
+			if S.autoVote then
+				pcall(function()
+					local w = getWave()
+					if w and w > 0 then voteTries = 0 return end
+					if voteTries < 3 and os.clock() - lastVote > 4 then fireVote() end
+				end)
+			end
+		end
+	end)
+
+	-- AUTO START (jeda 5 detik)
+	local lastReady, startWaitFrom = -1e9, nil
+	X.resetStart = function() lastReady = -1e9 startWaitFrom = nil end
+
+	task.spawn(function()
+		while alive do
+			task.wait(1)
+			if S.autoStart then
+				pcall(function()
+					local w = getWave()
+					local inLobby = (w == nil or w == 0)
+					if not inLobby then startWaitFrom = nil return end
+
+					if not startWaitFrom then
+						startWaitFrom = os.clock()
+						log(("AUTO START: menunggu %d detik sebelum ReadyUp..."):format(CFG.START_DELAY))
+					end
+					if os.clock() - startWaitFrom < CFG.START_DELAY then return end
+
+					if S.autoVote and voteTries == 0 then return end
+					if S.autoVote and voteTries < 99 and os.clock() - lastVote < 3 then return end
+
+					local gap = (w == nil) and 30 or 6
+					if os.clock() - lastReady > gap then
+						local ev = eventByName("ReadyUp")
+						if ev then
+							ev:FireServer()
+							lastReady = os.clock()
+							log("AUTO START: ReadyUp dikirim")
+						end
+					end
+				end)
+			else
+				startWaitFrom = nil
+			end
+		end
+	end)
+end
 
 ------------------------------------------------------------------ AUTO REPLAY
-local resultsAt = -1e9
-local resultConns = {}
+do
+	local resultsAt = -1e9
 
-local function hookResultEvents(folder)
-	for _, ev in ipairs(folder:GetChildren()) do
-		if ev:IsA("RemoteEvent") and ev.Name ~= "ResultsAction" then
-			local n = ev.Name:lower()
-			for _, p in ipairs(CFG.RESULT_EVENT_HINTS) do
-				if n:find(p, 1, true) then
-					table.insert(resultConns, ev.OnClientEvent:Connect(function()
-						resultsAt = os.clock()
-					end))
-					log("Pantau event hasil: " .. ev.Name)
-					break
-				end
-			end
-		end
-	end
-end
-
-local function resultsVisible()
-	if os.clock() - resultsAt < 60 then return true, "event" end
-	local pg = LP:FindFirstChild("PlayerGui")
-	if not pg then return false end
-	for _, v in ipairs(pg:GetDescendants()) do
-		if v:IsA("TextLabel") or v:IsA("TextButton") then
-			local t = v.Text
-			if #t > 0 and #t < 24 then
-				local u = t:upper():gsub("[^%u ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
-				if CFG.RESULT_TEXTS[u] and guiVisible(v) then return true, t end
-			end
-		end
-	end
-	return false
-end
-
-local replayFirst, lastReplay = nil, -1e9
-task.spawn(function()
-	while alive do
-		task.wait(2)
-		if S.autoReplay then
-			pcall(function()
-				if mode == "record" then replayFirst = nil return end
-				local seen, why = resultsVisible()
-				if not seen then replayFirst = nil return end
-				if not replayFirst then
-					replayFirst = os.clock()
-					log("AUTO REPLAY: layar hasil terdeteksi (" .. tostring(why) .. ")")
-				end
-				if os.clock() - replayFirst >= CFG.REPLAY_DELAY and os.clock() - lastReplay > 8 then
-					lastReplay = os.clock()
-					local ev = eventByName("ResultsAction")
-					if ev then
-						ev:FireServer("Rejoin")
-						log("AUTO REPLAY: Rejoin dikirim")
-					else
-						log("AUTO REPLAY: event ResultsAction tidak ketemu")
+	X.hookResult = function(folder)
+		for _, ev in ipairs(folder:GetChildren()) do
+			if ev:IsA("RemoteEvent") and ev.Name ~= "ResultsAction" then
+				local n = ev.Name:lower()
+				for _, p in ipairs(CFG.RESULT_EVENT_HINTS) do
+					if n:find(p, 1, true) then
+						table.insert(X.resultConns, ev.OnClientEvent:Connect(function()
+							resultsAt = os.clock()
+						end))
+						log("Pantau event hasil: " .. ev.Name)
+						break
 					end
 				end
-			end)
+			end
 		end
 	end
-end)
+
+	local function resultsVisible()
+		if os.clock() - resultsAt < 60 then return true, "event" end
+		local pg = LP:FindFirstChild("PlayerGui")
+		if not pg then return false end
+		for _, v in ipairs(pg:GetDescendants()) do
+			if v:IsA("TextLabel") or v:IsA("TextButton") then
+				local t = v.Text
+				if #t > 0 and #t < 24 then
+					local u = t:upper():gsub("[^%u ]", ""):gsub("^%s+", ""):gsub("%s+$", "")
+					if CFG.RESULT_TEXTS[u] and guiVisible(v) then return true, t end
+				end
+			end
+		end
+		return false
+	end
+
+	local replayFirst, lastReplay = nil, -1e9
+	X.resetReplay = function() replayFirst = nil end
+
+	task.spawn(function()
+		while alive do
+			task.wait(2)
+			if S.autoReplay then
+				pcall(function()
+					if mode == "record" then replayFirst = nil return end
+					local seen, why = resultsVisible()
+					if not seen then replayFirst = nil return end
+					if not replayFirst then
+						replayFirst = os.clock()
+						log("AUTO REPLAY: layar hasil terdeteksi (" .. tostring(why) .. ")")
+					end
+					if os.clock() - replayFirst >= CFG.REPLAY_DELAY and os.clock() - lastReplay > 8 then
+						lastReplay = os.clock()
+						local ev = eventByName("ResultsAction")
+						if ev then
+							ev:FireServer("Rejoin")
+							log("AUTO REPLAY: Rejoin dikirim")
+						else
+							log("AUTO REPLAY: event ResultsAction tidak ketemu")
+						end
+					end
+				end)
+			end
+		end
+	end)
+end
 
 ------------------------------------------------------------------ AUTO PICKUP (karakter jalan ke item)
-local openDrops = {}
-local assigned = {}
-local recentAdds = {}
-local pickStat = { ok = 0, fail = 0 }
-local itemConns, itemConnected = {}, {}
-local pickLabel, wsConn
+do
+	local openDrops = {}
+	local assigned = {}
+	local recentAdds = {}
+	local pickStat = { ok = 0, fail = 0 }
+	local itemConnected = {}
 
-local function posOf(inst)
-	if inst:IsA("BasePart") then return inst.Position end
-	if inst:IsA("Model") then return getPos(inst) end
-end
-
-local function isIgnored(inst)
-	local cam = workspace.CurrentCamera
-	if cam and inst:IsDescendantOf(cam) then return true end
-	for _, pl in ipairs(Players:GetPlayers()) do
-		local c = pl.Character
-		if c and inst:IsDescendantOf(c) then return true end
+	local function posOf(inst)
+		if inst:IsA("BasePart") then return inst.Position end
+		if inst:IsA("Model") then return getPos(inst) end
 	end
-	local tf = getFolder()
-	if tf and inst:IsDescendantOf(tf) then return true end
-	return false
-end
 
-local function onWsAdded(inst)
-	if not alive then return end
-	if inst:IsA("BasePart") or inst:IsA("Model") then
-		recentAdds[#recentAdds + 1] = { inst = inst, t = os.clock() }
-		if #recentAdds > 400 then table.remove(recentAdds, 1) end
+	local function isIgnored(inst)
+		local cam = workspace.CurrentCamera
+		if cam and inst:IsDescendantOf(cam) then return true end
+		for _, pl in ipairs(Players:GetPlayers()) do
+			local c = pl.Character
+			if c and inst:IsDescendantOf(c) then return true end
+		end
+		local tf = getFolder()
+		if tf and inst:IsDescendantOf(tf) then return true end
+		return false
 	end
-end
 
-local function findRecent(t)
-	for i = #recentAdds, 1, -1 do
-		local e = recentAdds[i]
-		if e.t < t.born - 3 then break end
-		local inst = e.inst
-		if e.t <= t.born + 4 and inst.Parent and inst.Name == t.name
-			and not assigned[inst] and not isIgnored(inst) then
-			return inst
+	X.onWsAdded = function(inst)
+		if not alive then return end
+		if inst:IsA("BasePart") or inst:IsA("Model") then
+			recentAdds[#recentAdds + 1] = { inst = inst, t = os.clock() }
+			if #recentAdds > 400 then table.remove(recentAdds, 1) end
 		end
 	end
-end
 
-local function scanWorkspace(t)
-	local cands = {}
-	local list = workspace:GetDescendants()
-	for i, d in ipairs(list) do
-		local cand
-		if d.Name == t.name and (d:IsA("BasePart") or d:IsA("Model")) then
-			cand = d
-		elseif d:IsA("TextLabel") and d.Text == t.name then
-			local bb = d:FindFirstAncestorWhichIsA("BillboardGui")
-			local ad = bb and (bb.Adornee or bb.Parent)
-			if ad and (ad:IsA("BasePart") or ad:IsA("Model")) then cand = ad end
-		end
-		if cand and not assigned[cand] and not isIgnored(cand) and posOf(cand) then
-			cands[#cands + 1] = cand
-			if #cands >= 6 then break end
-		end
-		if i % 4000 == 0 then task.wait() end
-	end
-	for _, c in ipairs(cands) do
-		local ok, tt = pcall(function() return c:FindFirstChildWhichIsA("TouchTransmitter", true) end)
-		if ok and tt then return c end
-	end
-	return cands[1]
-end
-
-local function markFail(t, why)
-	if t.failed then return end
-	t.failed = true
-	pickStat.fail += 1
-	log(("PICKUP GAGAL: %s (%s)"):format(t.name, why))
-end
-
-local function onItemEvent(tag, id, name)
-	if not alive or type(id) ~= "string" then return end
-	if tag == "Drop" then
-		if not openDrops[id] then
-			openDrops[id] = { name = tostring(name), born = os.clock(), n = 0 }
-		end
-	elseif tag == "Taken" then
-		local t = openDrops[id]
-		if t then
-			openDrops[id] = nil
-			if t.inst then assigned[t.inst] = nil end
-			if t.n > 0 and not t.failed then
-				pickStat.ok += 1
-				log(("PICKUP OK: %s (%d percobaan)"):format(t.name, t.n))
+	local function findRecent(t)
+		for i = #recentAdds, 1, -1 do
+			local e = recentAdds[i]
+			if e.t < t.born - 3 then break end
+			local inst = e.inst
+			if e.t <= t.born + 4 and inst.Parent and inst.Name == t.name
+				and not assigned[inst] and not isIgnored(inst) then
+				return inst
 			end
 		end
 	end
-end
 
-local function connectItem(ev)
-	if itemConnected[ev] or ev.Name ~= "ItemDrop" or not ev:IsA("RemoteEvent") then return end
-	itemConnected[ev] = true
-	local ok, c = pcall(function()
-		return ev.OnClientEvent:Connect(function(...) pcall(onItemEvent, ...) end)
-	end)
-	if ok and c then table.insert(itemConns, c) end
-end
-
-local function getHum()
-	local c = LP.Character
-	local h = c and c:FindFirstChildOfClass("Humanoid")
-	local r = c and c:FindFirstChild("HumanoidRootPart")
-	if h and r and h.Health > 0 then return h, r end
-end
-
-local function followPath(h, r, p, isDone)
-	local ok, path = pcall(function()
-		return PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true })
-	end)
-	if not ok or not path then return end
-	local okc = pcall(function() path:ComputeAsync(r.Position, p) end)
-	if not okc or path.Status ~= Enum.PathStatus.Success then return end
-	for _, wp in ipairs(path:GetWaypoints()) do
-		if not alive or not S.autoPickup or isDone() then return end
-		if wp.Action == Enum.PathWaypointAction.Jump then h.Jump = true end
-		local fin = false
-		local c = h.MoveToFinished:Connect(function() fin = true end)
-		h:MoveTo(wp.Position)
-		local t = os.clock()
-		while not fin and os.clock() - t < 2 and alive and not isDone() do task.wait(0.05) end
-		c:Disconnect()
-	end
-end
-
-local function walkTo(getTarget, isDone, timeout)
-	local t0 = os.clock()
-	local h, r = getHum()
-	if not h then return false end
-	local lastPos, lastMove = r.Position, os.clock()
-	local pathTried = 0
-	while alive and S.autoPickup and os.clock() - t0 < timeout do
-		if isDone() then return true end
-		h, r = getHum()
-		if not h then return false end
-		local p = getTarget()
-		if not p then return false end
-		local dx, dz = p.X - r.Position.X, p.Z - r.Position.Z
-		if math.sqrt(dx * dx + dz * dz) < PK.REACH and math.abs(p.Y - r.Position.Y) < 10 then return true end
-		h:MoveTo(p)
-		if (r.Position - lastPos).Magnitude > 0.8 then
-			lastPos, lastMove = r.Position, os.clock()
-		elseif os.clock() - lastMove > 1.2 then
-			h.Jump = true
-			if os.clock() - lastMove > 2.5 and pathTried < 3 then
-				pathTried += 1
-				followPath(h, r, p, isDone)
-				lastPos, lastMove = r.Position, os.clock()
+	local function scanWorkspace(t)
+		local cands = {}
+		local list = workspace:GetDescendants()
+		for i, d in ipairs(list) do
+			local cand
+			if d.Name == t.name and (d:IsA("BasePart") or d:IsA("Model")) then
+				cand = d
+			elseif d:IsA("TextLabel") and d.Text == t.name then
+				local bb = d:FindFirstAncestorWhichIsA("BillboardGui")
+				local ad = bb and (bb.Adornee or bb.Parent)
+				if ad and (ad:IsA("BasePart") or ad:IsA("Model")) then cand = ad end
 			end
+			if cand and not assigned[cand] and not isIgnored(cand) and posOf(cand) then
+				cands[#cands + 1] = cand
+				if #cands >= 6 then break end
+			end
+			if i % 4000 == 0 then task.wait() end
 		end
-		task.wait(0.15)
+		for _, c in ipairs(cands) do
+			local ok, tt = pcall(function() return c:FindFirstChildWhichIsA("TouchTransmitter", true) end)
+			if ok and tt then return c end
+		end
+		return cands[1]
 	end
-	return false
-end
 
-local function resolveItem(t)
-	if t.inst and t.inst.Parent then return t.inst end
-	if t.inst then assigned[t.inst] = nil t.inst = nil end
-	local i = findRecent(t)
-	if not i and not t.scanned and os.clock() - t.born > 1.2 then
-		t.scanned = true
-		i = scanWorkspace(t)
+	local function markFail(t, why)
+		if t.failed then return end
+		t.failed = true
+		pickStat.fail += 1
+		log(("PICKUP GAGAL: %s (%s)"):format(t.name, why))
 	end
-	if i then
-		t.inst = i
-		assigned[i] = true
-		local p = posOf(i)
-		log(("Item ketemu: %s @ %s"):format(t.name, i:GetFullName():sub(-40)))
-		if not p then t.inst = nil assigned[i] = nil end
-	end
-	return t.inst
-end
 
-task.spawn(function()
-	while alive do
-		task.wait(0.3)
-		local now = os.clock()
-
-		local ids = {}
-		for id in pairs(openDrops) do ids[#ids + 1] = id end
-
-		for _, id in ipairs(ids) do
+	local function onItemEvent(tag, id, name)
+		if not alive or type(id) ~= "string" then return end
+		if tag == "Drop" then
+			if not openDrops[id] then
+				openDrops[id] = { name = tostring(name), born = os.clock(), n = 0 }
+			end
+		elseif tag == "Taken" then
 			local t = openDrops[id]
-			if t and now - t.born > PK.MAX_AGE then
+			if t then
 				openDrops[id] = nil
 				if t.inst then assigned[t.inst] = nil end
-				if t.n > 0 then markFail(t, "kadaluarsa") end
-			end
-		end
-
-		if S.autoPickup then
-			local h, r = getHum()
-			if h then
-				local bestId, bestT, bestD
-				ids = {}
-				for id in pairs(openDrops) do ids[#ids + 1] = id end
-				for _, id in ipairs(ids) do
-					local t = openDrops[id]
-					if t and not t.failed then
-						local inst = resolveItem(t)
-						if inst then
-							local p = posOf(inst)
-							if p then
-								local d = (p - r.Position).Magnitude
-								if not bestD or d < bestD then bestId, bestT, bestD = id, t, d end
-							end
-						elseif os.clock() - t.born > PK.FIND_TIMEOUT then
-							markFail(t, "item fisik tidak ketemu")
-						end
-					end
-				end
-
-				if bestT and openDrops[bestId] == bestT then
-					local t, id = bestT, bestId
-					t.n += 1
-					log(("AUTO PICKUP: jalan ke %s (%d studs)"):format(t.name, bestD))
-					if t.n > 1 then
-						local h2, r2p = getHum()
-						if h2 then
-							h2.Jump = true
-							h2:MoveTo(r2p.Position + Vector3.new(4, 0, 0))
-							task.wait(0.6)
-						end
-					end
-					walkTo(function()
-						local i = t.inst
-						return i and i.Parent and posOf(i) or nil
-					end, function() return openDrops[id] ~= t end, PK.WALK_TIMEOUT)
-
-					local w = os.clock()
-					while alive and openDrops[id] == t and os.clock() - w < 1.5 do task.wait(0.1) end
-					if openDrops[id] == t and t.n >= PK.MAX_TRY then
-						markFail(t, "tidak terclaim setelah " .. t.n .. " percobaan")
-					end
+				if t.n > 0 and not t.failed then
+					pickStat.ok += 1
+					log(("PICKUP OK: %s (%d percobaan)"):format(t.name, t.n))
 				end
 			end
 		end
 	end
-end)
 
-task.spawn(function()
-	while alive do
-		task.wait(0.5)
-		local waiting = 0
-		for _, t in pairs(openDrops) do
-			if not t.failed then waiting += 1 end
-		end
-		if pickLabel then
-			pickLabel.Text = ("Pickup: ok %d | gagal %d | menunggu %d"):format(pickStat.ok, pickStat.fail, waiting)
-		end
-	end
-end)
-
------------------------------------------------------------------- UI
-local parent
-pcall(function() parent = (gethui and gethui()) or game:GetService("CoreGui") end)
-if not parent then parent = LP:WaitForChild("PlayerGui") end
-
-local gui = Instance.new("ScreenGui")
-gui.Name = "TMacroUI"
-gui.ResetOnSpawn = false
-gui.DisplayOrder = 999
-pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
-gui.Parent = parent
-
-local FULL = UDim2.fromOffset(270, 300)
-local frame = Instance.new("Frame")
-frame.Size = FULL
-frame.Position = UDim2.new(0, 10, 0.1, 0)
-frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
-frame.BorderSizePixel = 0
-frame.Active = true
-frame.Parent = gui
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
-
-local function mkBtn(par, text, pos, size, color)
-	local b = Instance.new("TextButton")
-	b.Position, b.Size, b.BackgroundColor3 = pos, size, color
-	b.BorderSizePixel = 0
-	b.Text = text
-	b.TextColor3 = Color3.new(1, 1, 1)
-	b.Font = Enum.Font.GothamBold
-	b.TextSize = 12
-	b.Modal = false
-	b.AutoButtonColor = true
-	b.Parent = par
-	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-	return b
-end
-local function mkLabel(par, text, pos, size, align, color)
-	local l = Instance.new("TextLabel")
-	l.BackgroundTransparency = 1
-	l.Position, l.Size = pos, size
-	l.TextXAlignment = align or Enum.TextXAlignment.Left
-	l.TextColor3 = color or Color3.new(1, 1, 1)
-	l.Font = Enum.Font.GothamBold
-	l.TextSize = 12
-	l.Text = text
-	l.Parent = par
-	return l
-end
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -36, 0, 30)
-title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-title.BorderSizePixel = 0
-title.Text = "  Tower Macro v3.7"
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.TextColor3 = Color3.new(1, 1, 1)
-title.Font = Enum.Font.GothamBold
-title.TextSize = 13
-title.Active = true
-title.Parent = frame
-Instance.new("UICorner", title).CornerRadius = UDim.new(0, 8)
-
-local minBtn = mkBtn(frame, "-", UDim2.new(1, -32, 0, 0), UDim2.fromOffset(32, 30), Color3.fromRGB(60, 60, 75))
-minBtn.TextSize = 18
-
-local body = Instance.new("Frame")
-body.Size = UDim2.new(1, 0, 1, -30)
-body.Position = UDim2.fromOffset(0, 30)
-body.BackgroundTransparency = 1
-body.Parent = frame
-
-local tabNames = { "Makro", "Auto", "Log" }
-local tabBtns, pages = {}, {}
-for i, n in ipairs(tabNames) do
-	tabBtns[n] = mkBtn(body, n, UDim2.new((i - 1) / 3, i == 1 and 6 or 2, 0, 2), UDim2.new(1 / 3, -4, 0, 22), Color3.fromRGB(55, 55, 70))
-	local pg = Instance.new("Frame")
-	pg.BackgroundTransparency = 1
-	pg.Position = UDim2.fromOffset(6, 28)
-	pg.Size = UDim2.new(1, -12, 1, -58)
-	pg.Visible = false
-	pg.Parent = body
-	pages[n] = pg
-end
-local function showTab(n)
-	for k, p in pairs(pages) do
-		p.Visible = (k == n)
-		tabBtns[k].BackgroundColor3 = (k == n) and Color3.fromRGB(80, 90, 150) or Color3.fromRGB(55, 55, 70)
-	end
-end
-for n, b in pairs(tabBtns) do b.MouseButton1Click:Connect(function() showTab(n) end) end
-
-statusLabel = mkLabel(body, "", UDim2.new(0, 6, 1, -26), UDim2.new(1, -12, 0, 22), nil, Color3.fromRGB(180, 200, 255))
-statusLabel.Font = Enum.Font.Code
-statusLabel.TextSize = 10
-statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
-
-local refreshToggles, playSlotLabel
-
--- Makro page
-local pm = pages.Makro
-cashLabel = mkLabel(pm, "Cash: ?", UDim2.new(0, 0, 0, 0), UDim2.new(0.4, 0, 0, 16), nil, Color3.fromRGB(120, 255, 140))
-countLabel = mkLabel(pm, "P:0 U:0 S:0 A:0", UDim2.new(0.4, 0, 0, 0), UDim2.new(0.6, 0, 0, 16), Enum.TextXAlignment.Right, Color3.fromRGB(200, 200, 255))
-local infoLabel = mkLabel(pm, "W0  +0s  x1", UDim2.new(0, 0, 0, 16), UDim2.new(0.64, 0, 0, 16), nil, Color3.fromRGB(255, 220, 130))
-infoLabel.Font = Enum.Font.Code
-infoLabel.TextSize = 11
-local spdBtn = mkBtn(pm, "Spd: Auto", UDim2.new(0.66, 0, 0, 17), UDim2.new(0.34, 0, 0, 15), Color3.fromRGB(80, 70, 110))
-spdBtn.TextSize = 10
-local recBtn = mkBtn(pm, "Record", UDim2.new(0, 0, 0, 36), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(190, 50, 50))
-local playBtn = mkBtn(pm, "Play", UDim2.new(0.5, 3, 0, 36), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(50, 150, 70))
-
-local nameBox = Instance.new("TextBox")
-nameBox.Position = UDim2.new(0, 0, 0, 68)
-nameBox.Size = UDim2.new(1, 0, 0, 24)
-nameBox.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-nameBox.BorderSizePixel = 0
-nameBox.PlaceholderText = "nama makro"
-nameBox.Text = ""
-nameBox.TextColor3 = Color3.new(1, 1, 1)
-nameBox.PlaceholderColor3 = Color3.fromRGB(140, 140, 150)
-nameBox.Font = Enum.Font.Gotham
-nameBox.TextSize = 12
-nameBox.ClearTextOnFocus = false
-nameBox.Parent = pm
-Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
-
-local saveBtn = mkBtn(pm, "Save", UDim2.new(0, 0, 0, 96), UDim2.new(1 / 3, -3, 0, 24), Color3.fromRGB(50, 110, 170))
-local loadBtn = mkBtn(pm, "Load", UDim2.new(1 / 3, 1, 0, 96), UDim2.new(1 / 3, -3, 0, 24), Color3.fromRGB(110, 90, 170))
-local delBtn = mkBtn(pm, "Hapus", UDim2.new(2 / 3, 2, 0, 96), UDim2.new(1 / 3, -2, 0, 24), Color3.fromRGB(150, 70, 70))
-
-local slotList = Instance.new("ScrollingFrame")
-slotList.Position = UDim2.new(0, 0, 0, 124)
-slotList.Size = UDim2.new(1, 0, 1, -124)
-slotList.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
-slotList.BorderSizePixel = 0
-slotList.ScrollBarThickness = 4
-slotList.CanvasSize = UDim2.new()
-slotList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-slotList.Parent = pm
-local slotLayout = Instance.new("UIListLayout", slotList)
-slotLayout.Padding = UDim.new(0, 2)
-
-local selectedSlot
-local function refreshSlotList()
-	for _, c in ipairs(slotList:GetChildren()) do
-		if c:IsA("TextButton") then c:Destroy() end
-	end
-	local names = {}
-	for n in pairs(slots) do table.insert(names, n) end
-	table.sort(names)
-	for _, n in ipairs(names) do
-		local b = mkBtn(slotList, ("%s (%d aksi)"):format(n, #slots[n]), UDim2.new(), UDim2.new(1, -6, 0, 22),
-			(n == selectedSlot) and Color3.fromRGB(80, 90, 150) or Color3.fromRGB(45, 45, 58))
-		b.TextXAlignment = Enum.TextXAlignment.Left
-		b.Font = Enum.Font.Gotham
-		b.MouseButton1Click:Connect(function()
-			selectedSlot = n
-			S.playSlot = n
-			saveSettings()
-			nameBox.Text = n
-			refreshSlotList()
-			if refreshToggles then refreshToggles() end
+	X.connectItem = function(ev)
+		if itemConnected[ev] or ev.Name ~= "ItemDrop" or not ev:IsA("RemoteEvent") then return end
+		itemConnected[ev] = true
+		local ok, c = pcall(function()
+			return ev.OnClientEvent:Connect(function(...) pcall(onItemEvent, ...) end)
 		end)
+		if ok and c then table.insert(X.itemConns, c) end
 	end
-end
 
-local function slotName()
-	local n = nameBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
-	if n == "" then n = selectedSlot or "" end
-	return n ~= "" and n or nil
-end
-
-saveBtn.MouseButton1Click:Connect(function()
-	if mode == "record" then log("Stop record dulu sebelum Save.") return end
-	local n = slotName()
-	if not n then log("Isi nama makro dulu.") return end
-	if #macro == 0 then log("Makro kosong, tidak ada yang disimpan.") return end
-	slots[n] = deepcopy(macro)
-	selectedSlot = n
-	S.playSlot = n
-	saveSlots()
-	saveSettings()
-	refreshSlotList()
-	if refreshToggles then refreshToggles() end
-	log(("SAVE '%s' (%d aksi) tersimpan permanen."):format(n, #macro))
-end)
-
-loadBtn.MouseButton1Click:Connect(function()
-	if mode ~= "idle" then log("Stop record/play dulu sebelum Load.") return end
-	local n = slotName()
-	if not n or not slots[n] then log("Pilih makro yang tersimpan dulu.") return end
-	macro = deepcopy(slots[n])
-	selectedSlot = n
-	S.playSlot = n
-	saveCurrent()
-	saveSettings()
-	refreshCount()
-	refreshSlotList()
-	if refreshToggles then refreshToggles() end
-	log(("LOAD '%s' (%d aksi) siap di-Play."):format(n, #macro))
-end)
-
-delBtn.MouseButton1Click:Connect(function()
-	local n = slotName()
-	if not n or not slots[n] then log("Pilih makro yang mau dihapus.") return end
-	slots[n] = nil
-	if selectedSlot == n then selectedSlot = nil end
-	if S.playSlot == n then S.playSlot = nil saveSettings() end
-	nameBox.Text = ""
-	saveSlots()
-	refreshSlotList()
-	if refreshToggles then refreshToggles() end
-	log(("HAPUS '%s'."):format(n))
-end)
-
--- tombol speed manual
-local SPD_CYCLE = { 0, 1, 1.5, 2 }
-local function refreshSpd()
-	local m = S.spdMode or 0
-	spdBtn.Text = (m > 0) and ("Spd: x" .. tostring(m)) or "Spd: Auto"
-	spdBtn.BackgroundColor3 = (m > 0) and Color3.fromRGB(150, 110, 40) or Color3.fromRGB(80, 70, 110)
-end
-spdBtn.MouseButton1Click:Connect(function()
-	local idx = 1
-	for i, v in ipairs(SPD_CYCLE) do
-		if v == (S.spdMode or 0) then idx = i end
+	local function getHum()
+		local c = LP.Character
+		local h = c and c:FindFirstChildOfClass("Humanoid")
+		local r = c and c:FindFirstChild("HumanoidRootPart")
+		if h and r and h.Health > 0 then return h, r end
 	end
-	S.spdMode = SPD_CYCLE[idx % #SPD_CYCLE + 1]
-	saveSettings(); refreshSpd()
-	log("Speed makro: " .. ((S.spdMode > 0) and ("manual x" .. tostring(S.spdMode)) or "otomatis (baca dari layar)"))
-end)
 
--- Auto page (scrollable)
-local pa = Instance.new("ScrollingFrame")
-pa.BackgroundTransparency = 1
-pa.BorderSizePixel = 0
-pa.Size = UDim2.new(1, 0, 1, 0)
-pa.ScrollBarThickness = 3
-pa.CanvasSize = UDim2.new()
-pa.AutomaticCanvasSize = Enum.AutomaticSize.Y
-pa.Parent = pages.Auto
-local paLayout = Instance.new("UIListLayout", pa)
-paLayout.Padding = UDim.new(0, 4)
-paLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	local function followPath(h, r, p, isDone)
+		local ok, path = pcall(function()
+			return PathfindingService:CreatePath({ AgentRadius = 2, AgentHeight = 5, AgentCanJump = true })
+		end)
+		if not ok or not path then return end
+		local okc = pcall(function() path:ComputeAsync(r.Position, p) end)
+		if not okc or path.Status ~= Enum.PathStatus.Success then return end
+		for _, wp in ipairs(path:GetWaypoints()) do
+			if not alive or not S.autoPickup or isDone() then return end
+			if wp.Action == Enum.PathWaypointAction.Jump then h.Jump = true end
+			local fin = false
+			local c = h.MoveToFinished:Connect(function() fin = true end)
+			h:MoveTo(wp.Position)
+			local t = os.clock()
+			while not fin and os.clock() - t < 2 and alive and not isDone() do task.wait(0.05) end
+			c:Disconnect()
+		end
+	end
 
-local lo = 0
-local function nextLO() lo += 1 return lo end
+	local function walkTo(getTarget, isDone, timeout)
+		local t0 = os.clock()
+		local h, r = getHum()
+		if not h then return false end
+		local lastPos, lastMove = r.Position, os.clock()
+		local pathTried = 0
+		while alive and S.autoPickup and os.clock() - t0 < timeout do
+			if isDone() then return true end
+			h, r = getHum()
+			if not h then return false end
+			local p = getTarget()
+			if not p then return false end
+			local dx, dz = p.X - r.Position.X, p.Z - r.Position.Z
+			if math.sqrt(dx * dx + dz * dz) < PK.REACH and math.abs(p.Y - r.Position.Y) < 10 then return true end
+			h:MoveTo(p)
+			if (r.Position - lastPos).Magnitude > 0.8 then
+				lastPos, lastMove = r.Position, os.clock()
+			elseif os.clock() - lastMove > 1.2 then
+				h.Jump = true
+				if os.clock() - lastMove > 2.5 and pathTried < 3 then
+					pathTried += 1
+					followPath(h, r, p, isDone)
+					lastPos, lastMove = r.Position, os.clock()
+				end
+			end
+			task.wait(0.15)
+		end
+		return false
+	end
 
-local function styleToggle(b, label, on)
-	b.Text = label .. ": " .. (on and "ON" or "OFF")
-	b.BackgroundColor3 = on and Color3.fromRGB(50, 150, 70) or Color3.fromRGB(70, 70, 80)
-end
-local function mkToggle()
-	local b = mkBtn(pa, "", UDim2.new(), UDim2.new(1, -8, 0, 28), Color3.new())
-	b.LayoutOrder = nextLO()
-	return b
-end
+	local function resolveItem(t)
+		if t.inst and t.inst.Parent then return t.inst end
+		if t.inst then assigned[t.inst] = nil t.inst = nil end
+		local i = findRecent(t)
+		if not i and not t.scanned and os.clock() - t.born > 1.2 then
+			t.scanned = true
+			i = scanWorkspace(t)
+		end
+		if i then
+			t.inst = i
+			assigned[i] = true
+			local p = posOf(i)
+			log(("Item ketemu: %s @ %s"):format(t.name, i:GetFullName():sub(-40)))
+			if not p then t.inst = nil assigned[i] = nil end
+		end
+		return t.inst
+	end
 
-local tPlay = mkToggle()
-playSlotLabel = mkLabel(pa, "", UDim2.new(), UDim2.new(1, -8, 0, 16), nil, Color3.fromRGB(170, 190, 255))
-playSlotLabel.Font = Enum.Font.Gotham
-playSlotLabel.TextSize = 11
-playSlotLabel.TextTruncate = Enum.TextTruncate.AtEnd
-playSlotLabel.LayoutOrder = nextLO()
+	task.spawn(function()
+		while alive do
+			task.wait(0.3)
+			local now = os.clock()
 
-local tVote = mkToggle()
+			local ids = {}
+			for id in pairs(openDrops) do ids[#ids + 1] = id end
 
-local diffRow = Instance.new("Frame")
-diffRow.BackgroundTransparency = 1
-diffRow.Size = UDim2.new(1, -8, 0, 26)
-diffRow.LayoutOrder = nextLO()
-diffRow.Parent = pa
-local diffBtns = {}
-for i, name in ipairs(DIFFS) do
-	local b = mkBtn(diffRow, name, UDim2.new((i - 1) / 4, i == 1 and 0 or 2, 0, 0), UDim2.new(0.25, -2, 1, 0), Color3.fromRGB(55, 55, 70))
-	b.TextSize = 10
-	diffBtns[name] = b
-	b.MouseButton1Click:Connect(function()
-		S.difficulty = name
-		voteTries = 0
-		saveSettings()
-		refreshToggles()
-		log("Difficulty vote: " .. name)
+			for _, id in ipairs(ids) do
+				local t = openDrops[id]
+				if t and now - t.born > PK.MAX_AGE then
+					openDrops[id] = nil
+					if t.inst then assigned[t.inst] = nil end
+					if t.n > 0 then markFail(t, "kadaluarsa") end
+				end
+			end
+
+			if S.autoPickup then
+				local h, r = getHum()
+				if h then
+					local bestId, bestT, bestD
+					ids = {}
+					for id in pairs(openDrops) do ids[#ids + 1] = id end
+					for _, id in ipairs(ids) do
+						local t = openDrops[id]
+						if t and not t.failed then
+							local inst = resolveItem(t)
+							if inst then
+								local p = posOf(inst)
+								if p then
+									local d = (p - r.Position).Magnitude
+									if not bestD or d < bestD then bestId, bestT, bestD = id, t, d end
+								end
+							elseif os.clock() - t.born > PK.FIND_TIMEOUT then
+								markFail(t, "item fisik tidak ketemu")
+							end
+						end
+					end
+
+					if bestT and openDrops[bestId] == bestT then
+						local t, id = bestT, bestId
+						t.n += 1
+						log(("AUTO PICKUP: jalan ke %s (%d studs)"):format(t.name, bestD))
+						if t.n > 1 then
+							local h2, r2p = getHum()
+							if h2 then
+								h2.Jump = true
+								h2:MoveTo(r2p.Position + Vector3.new(4, 0, 0))
+								task.wait(0.6)
+							end
+						end
+						walkTo(function()
+							local i = t.inst
+							return i and i.Parent and posOf(i) or nil
+						end, function() return openDrops[id] ~= t end, PK.WALK_TIMEOUT)
+
+						local w = os.clock()
+						while alive and openDrops[id] == t and os.clock() - w < 1.5 do task.wait(0.1) end
+						if openDrops[id] == t and t.n >= PK.MAX_TRY then
+							markFail(t, "tidak terclaim setelah " .. t.n .. " percobaan")
+						end
+					end
+				end
+			end
+		end
 	end)
-end
 
-local tReplay = mkToggle()
-local t15 = mkToggle()
-local t2 = mkToggle()
-local tStart = mkToggle()
-local tPick = mkToggle()
-pickLabel = mkLabel(pa, "Pickup: ok 0 | gagal 0 | menunggu 0", UDim2.new(), UDim2.new(1, -8, 0, 18), nil, Color3.fromRGB(170, 190, 255))
-pickLabel.Font = Enum.Font.Gotham
-pickLabel.TextSize = 11
-pickLabel.LayoutOrder = nextLO()
-
-local diagBtn = mkBtn(pa, "Diagnosa Wave / Speed (hasil di Log)", UDim2.new(), UDim2.new(1, -8, 0, 26), Color3.fromRGB(60, 90, 110))
-diagBtn.TextSize = 11
-diagBtn.LayoutOrder = nextLO()
-diagBtn.MouseButton1Click:Connect(function()
-	showTab("Log")
-	task.spawn(function() pcall(diag) end)
-end)
-
-local hint = mkLabel(pa, "Makro mengikuti wave & waktu game (otomatis menyesuaikan speed). Kalau speed salah terbaca, atur manual lewat tombol Spd di tab Makro. Taruh skrip di folder autoexecute Delta agar Auto Play & Auto Replay jalan setelah rejoin.",
-	UDim2.new(), UDim2.new(1, -8, 0, 84), nil, Color3.fromRGB(150, 150, 165))
-hint.Font = Enum.Font.Gotham
-hint.TextSize = 10
-hint.TextWrapped = true
-hint.TextYAlignment = Enum.TextYAlignment.Top
-hint.LayoutOrder = nextLO()
-
-refreshToggles = function()
-	styleToggle(tPlay, "Auto Play (rejoin)", S.autoPlay)
-	playSlotLabel.Text = "Makro dipilih: " .. ((S.playSlot and slots[S.playSlot]) and S.playSlot or "- (tap nama di tab Makro)")
-	styleToggle(tVote, "Auto Vote", S.autoVote)
-	for name, b in pairs(diffBtns) do
-		b.BackgroundColor3 = (S.difficulty == name) and Color3.fromRGB(80, 90, 150) or Color3.fromRGB(55, 55, 70)
-	end
-	styleToggle(tReplay, "Auto Replay", S.autoReplay)
-	styleToggle(t15, "Auto Speed x1.5", S.speed == 1.5)
-	styleToggle(t2, "Auto Speed x2", S.speed == 2)
-	styleToggle(tStart, "Auto Start Match", S.autoStart)
-	styleToggle(tPick, "Auto Pickup (jalan)", S.autoPickup)
-end
-
-tPlay.MouseButton1Click:Connect(function()
-	S.autoPlay = not S.autoPlay
-	saveSettings(); refreshToggles()
-	log("Auto Play (rejoin): " .. (S.autoPlay and "ON" or "OFF"))
-end)
-tVote.MouseButton1Click:Connect(function()
-	S.autoVote = not S.autoVote
-	voteTries = 0
-	saveSettings(); refreshToggles()
-	log("Auto Vote: " .. (S.autoVote and ("ON (" .. S.difficulty .. ")") or "OFF"))
-end)
-tReplay.MouseButton1Click:Connect(function()
-	S.autoReplay = not S.autoReplay
-	replayFirst = nil
-	saveSettings(); refreshToggles()
-	log("Auto Replay: " .. (S.autoReplay and "ON" or "OFF"))
-end)
-t15.MouseButton1Click:Connect(function()
-	S.speed = (S.speed == 1.5) and 0 or 1.5
-	resetSpeedState()
-	saveSettings(); refreshToggles()
-	log("Auto Speed: " .. (S.speed == 0 and "OFF" or ("x" .. S.speed)))
-end)
-t2.MouseButton1Click:Connect(function()
-	S.speed = (S.speed == 2) and 0 or 2
-	resetSpeedState()
-	saveSettings(); refreshToggles()
-	log("Auto Speed: " .. (S.speed == 0 and "OFF" or ("x" .. S.speed)))
-end)
-tStart.MouseButton1Click:Connect(function()
-	S.autoStart = not S.autoStart
-	lastReady = -1e9
-	startWaitFrom = nil
-	saveSettings(); refreshToggles()
-	log("Auto Start: " .. (S.autoStart and ("ON (jeda " .. CFG.START_DELAY .. " detik)") or "OFF"))
-end)
-tPick.MouseButton1Click:Connect(function()
-	S.autoPickup = not S.autoPickup
-	saveSettings(); refreshToggles()
-	log("Auto Pickup: " .. (S.autoPickup and "ON (karakter akan jalan ke item)" or "OFF"))
-end)
-
--- Log page
-logScroll = Instance.new("ScrollingFrame")
-logScroll.Size = UDim2.new(1, 0, 1, 0)
-logScroll.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
-logScroll.BorderSizePixel = 0
-logScroll.ScrollBarThickness = 4
-logScroll.CanvasSize = UDim2.new()
-logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-logScroll.Parent = pages.Log
-Instance.new("UIListLayout", logScroll).SortOrder = Enum.SortOrder.LayoutOrder
-
-refreshUI = function()
-	recBtn.Text = (mode == "record") and "Stop Rec" or "Record"
-	playBtn.Text = (mode == "play") and "Stop" or "Play"
-end
-
-recBtn.MouseButton1Click:Connect(function()
-	if mode == "play" then return end
-	if mode == "record" then
-		mode = "idle"
-		saveCurrent()
-		log(("Record berhenti. Total %d aksi. Tekan Save untuk simpan permanen."):format(#macro))
-	else
-		macro = {}
-		seqCounter, nextFlush, pending = 0, 1, {}
-		knownIds, nameById, liveById, claimed, queue = {}, {}, {}, {}, {}
-		refreshCount()
-		recStartGT = gt
-		if curWave == 0 then waveStartGT = gt end
-		mode = "record"
-		log(("Record mulai. W%d +%.1fs | speed x%s | cash=%s"):format(
-			curWave, math.max(0, gt - waveStartGT), tostring(curSpeed), fmt(getCash())))
-		if curWave > 0 and waveApprox then
-			log("PERINGATAN: Record dimulai di tengah wave, awal wave hanya perkiraan. Untuk akurat, Record sebelum wave 1.")
+	task.spawn(function()
+		while alive do
+			task.wait(0.5)
+			local waiting = 0
+			for _, t in pairs(openDrops) do
+				if not t.failed then waiting += 1 end
+			end
+			if X.pickLabel then
+				X.pickLabel.Text = ("Pickup: ok %d | gagal %d | menunggu %d"):format(pickStat.ok, pickStat.fail, waiting)
+			end
 		end
-		if not waveSeen then
-			log("PERINGATAN: label WAVE belum terbaca. Tekan Diagnosa di tab Auto.")
-		end
-		if not speedSeen then
-			log("PERINGATAN: speed belum terbaca. Atur manual lewat tombol Spd di tab Makro.")
-		end
-	end
-	refreshUI()
-end)
-
-playBtn.MouseButton1Click:Connect(function()
-	if mode == "play" then
-		mode = "idle"
-		log("Play dihentikan.")
-	elseif mode == "idle" then
-		mode = "play"
-		refreshUI()
-		task.spawn(playMacro)
-	end
-	refreshUI()
-end)
-
--- minimize
-local minimized = false
-local function setMinimized(v)
-	minimized = v
-	body.Visible = not v
-	frame.Size = v and UDim2.fromOffset(130, 30) or FULL
-	title.Size = v and UDim2.new(1, -32, 0, 30) or UDim2.new(1, -36, 0, 30)
-	minBtn.Text = v and "+" or "-"
-end
-minBtn.MouseButton1Click:Connect(function() setMinimized(not minimized) end)
-setMinimized(true) -- otomatis minimize saat pertama kali di-execute
-
-local dragging, dragStart, startPos
-title.InputBegan:Connect(function(i)
-	if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
-		dragging, dragStart, startPos = true, i.Position, frame.Position
-	end
-end)
-UIS.InputChanged:Connect(function(i)
-	if dragging and (i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseMovement) then
-		local d = i.Position - dragStart
-		frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-	end
-end)
-UIS.InputEnded:Connect(function(i)
-	if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
-		dragging = false
-	end
-end)
-
-task.spawn(function()
-	while alive do
-		cashLabel.Text = "Cash: " .. fmt(getCash())
-		infoLabel.Text = ("W%d  +%.0fs  x%s%s%s"):format(
-			curWave, math.max(0, gt - waveStartGT), tostring(curSpeed),
-			speedSeen and "" or "?", waveSeen and "" or " (wave?)")
-		task.wait(0.5)
-	end
-end)
-
-G.TMacro_Destroy = function()
-	alive = false
-	mode = "idle"
-	G.TMacro_Handler2 = nil
-	G.TMacro_Handler3 = nil
-	if hbConn then pcall(function() hbConn:Disconnect() end) end
-	if wsConn then pcall(function() wsConn:Disconnect() end) end
-	for _, c in ipairs(itemConns) do pcall(function() c:Disconnect() end) end
-	for _, c in ipairs(resultConns) do pcall(function() c:Disconnect() end) end
-	pcall(function() gui:Destroy() end)
+	end)
 end
 
 ------------------------------------------------------------------ AUTO PLAY (rejoin)
@@ -1797,56 +1676,550 @@ local function startAutoPlay()
 	end)
 end
 
------------------------------------------------------------------- START
-local sv = readJson(CFG.SET_FILE)
-if sv then
-	S.speed = tonumber(sv.speed) or 0
-	S.autoStart = sv.autoStart == true
-	S.autoPickup = sv.autoPickup == true
-	S.autoPlay = sv.autoPlay == true
-	S.playSlot = type(sv.playSlot) == "string" and sv.playSlot or nil
-	S.autoVote = sv.autoVote == true
-	S.autoReplay = sv.autoReplay == true
-	S.spdMode = tonumber(sv.spdMode) or 0
-	for _, d in ipairs(DIFFS) do
-		if sv.difficulty == d then S.difficulty = d end
+------------------------------------------------------------------ UI + START
+do
+	local parent
+	pcall(function() parent = (gethui and gethui()) or game:GetService("CoreGui") end)
+	if not parent then parent = LP:WaitForChild("PlayerGui") end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "TMacroUI"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 999
+	pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+	gui.Parent = parent
+
+	local FULL = UDim2.fromOffset(270, 300)
+	local frame = Instance.new("Frame")
+	frame.Size = FULL
+	frame.Position = UDim2.new(0, 10, 0.1, 0)
+	frame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+	frame.BorderSizePixel = 0
+	frame.Active = true
+	frame.Parent = gui
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+	local function mkBtn(par, text, pos, size, color)
+		local b = Instance.new("TextButton")
+		b.Position, b.Size, b.BackgroundColor3 = pos, size, color
+		b.BorderSizePixel = 0
+		b.Text = text
+		b.TextColor3 = Color3.new(1, 1, 1)
+		b.Font = Enum.Font.GothamBold
+		b.TextSize = 12
+		b.Modal = false
+		b.AutoButtonColor = true
+		b.Parent = par
+		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+		return b
 	end
+	local function mkLabel(par, text, pos, size, align, color)
+		local l = Instance.new("TextLabel")
+		l.BackgroundTransparency = 1
+		l.Position, l.Size = pos, size
+		l.TextXAlignment = align or Enum.TextXAlignment.Left
+		l.TextColor3 = color or Color3.new(1, 1, 1)
+		l.Font = Enum.Font.GothamBold
+		l.TextSize = 12
+		l.Text = text
+		l.Parent = par
+		return l
+	end
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -36, 0, 30)
+	title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+	title.BorderSizePixel = 0
+	title.Text = "  Tower Macro v3.9"
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextColor3 = Color3.new(1, 1, 1)
+	title.Font = Enum.Font.GothamBold
+	title.TextSize = 13
+	title.Active = true
+	title.Parent = frame
+	Instance.new("UICorner", title).CornerRadius = UDim.new(0, 8)
+
+	local minBtn = mkBtn(frame, "-", UDim2.new(1, -32, 0, 0), UDim2.fromOffset(32, 30), Color3.fromRGB(60, 60, 75))
+	minBtn.TextSize = 18
+
+	local body = Instance.new("Frame")
+	body.Size = UDim2.new(1, 0, 1, -30)
+	body.Position = UDim2.fromOffset(0, 30)
+	body.BackgroundTransparency = 1
+	body.Parent = frame
+
+	local tabNames = { "Makro", "Auto", "Log" }
+	local tabBtns, pages = {}, {}
+	for i, n in ipairs(tabNames) do
+		tabBtns[n] = mkBtn(body, n, UDim2.new((i - 1) / 3, i == 1 and 6 or 2, 0, 2), UDim2.new(1 / 3, -4, 0, 22), Color3.fromRGB(55, 55, 70))
+		local pg = Instance.new("Frame")
+		pg.BackgroundTransparency = 1
+		pg.Position = UDim2.fromOffset(6, 28)
+		pg.Size = UDim2.new(1, -12, 1, -58)
+		pg.Visible = false
+		pg.Parent = body
+		pages[n] = pg
+	end
+	local function showTab(n)
+		for k, p in pairs(pages) do
+			p.Visible = (k == n)
+			tabBtns[k].BackgroundColor3 = (k == n) and Color3.fromRGB(80, 90, 150) or Color3.fromRGB(55, 55, 70)
+		end
+	end
+	for n, b in pairs(tabBtns) do b.MouseButton1Click:Connect(function() showTab(n) end) end
+
+	statusLabel = mkLabel(body, "", UDim2.new(0, 6, 1, -26), UDim2.new(1, -12, 0, 22), nil, Color3.fromRGB(180, 200, 255))
+	statusLabel.Font = Enum.Font.Code
+	statusLabel.TextSize = 10
+	statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+
+	local refreshToggles, playSlotLabel
+
+	-- Makro page
+	local pm = pages.Makro
+	cashLabel = mkLabel(pm, "Cash: ?", UDim2.new(0, 0, 0, 0), UDim2.new(0.4, 0, 0, 16), nil, Color3.fromRGB(120, 255, 140))
+	countLabel = mkLabel(pm, "P:0 U:0 S:0 A:0", UDim2.new(0.4, 0, 0, 0), UDim2.new(0.6, 0, 0, 16), Enum.TextXAlignment.Right, Color3.fromRGB(200, 200, 255))
+	local infoLabel = mkLabel(pm, "W0  +0s  x1", UDim2.new(0, 0, 0, 16), UDim2.new(0.64, 0, 0, 16), nil, Color3.fromRGB(255, 220, 130))
+	infoLabel.Font = Enum.Font.Code
+	infoLabel.TextSize = 11
+	local spdBtn = mkBtn(pm, "Spd: Auto", UDim2.new(0.66, 0, 0, 17), UDim2.new(0.34, 0, 0, 15), Color3.fromRGB(80, 70, 110))
+	spdBtn.TextSize = 10
+	local recBtn = mkBtn(pm, "Record", UDim2.new(0, 0, 0, 36), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(190, 50, 50))
+	local playBtn = mkBtn(pm, "Play", UDim2.new(0.5, 3, 0, 36), UDim2.new(0.5, -3, 0, 28), Color3.fromRGB(50, 150, 70))
+
+	local nameBox = Instance.new("TextBox")
+	nameBox.Position = UDim2.new(0, 0, 0, 68)
+	nameBox.Size = UDim2.new(1, 0, 0, 24)
+	nameBox.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+	nameBox.BorderSizePixel = 0
+	nameBox.PlaceholderText = "nama makro"
+	nameBox.Text = ""
+	nameBox.TextColor3 = Color3.new(1, 1, 1)
+	nameBox.PlaceholderColor3 = Color3.fromRGB(140, 140, 150)
+	nameBox.Font = Enum.Font.Gotham
+	nameBox.TextSize = 12
+	nameBox.ClearTextOnFocus = false
+	nameBox.Parent = pm
+	Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
+
+	local saveBtn = mkBtn(pm, "Save", UDim2.new(0, 0, 0, 96), UDim2.new(1 / 3, -3, 0, 24), Color3.fromRGB(50, 110, 170))
+	local loadBtn = mkBtn(pm, "Load", UDim2.new(1 / 3, 1, 0, 96), UDim2.new(1 / 3, -3, 0, 24), Color3.fromRGB(110, 90, 170))
+	local delBtn = mkBtn(pm, "Hapus", UDim2.new(2 / 3, 2, 0, 96), UDim2.new(1 / 3, -2, 0, 24), Color3.fromRGB(150, 70, 70))
+
+	local slotList = Instance.new("ScrollingFrame")
+	slotList.Position = UDim2.new(0, 0, 0, 124)
+	slotList.Size = UDim2.new(1, 0, 1, -124)
+	slotList.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
+	slotList.BorderSizePixel = 0
+	slotList.ScrollBarThickness = 4
+	slotList.CanvasSize = UDim2.new()
+	slotList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	slotList.Parent = pm
+	Instance.new("UIListLayout", slotList).Padding = UDim.new(0, 2)
+
+	local selectedSlot
+	local function refreshSlotList()
+		for _, c in ipairs(slotList:GetChildren()) do
+			if c:IsA("TextButton") then c:Destroy() end
+		end
+		local names = {}
+		for n in pairs(slots) do table.insert(names, n) end
+		table.sort(names)
+		for _, n in ipairs(names) do
+			local b = mkBtn(slotList, ("%s (%d aksi)"):format(n, #slots[n]), UDim2.new(), UDim2.new(1, -6, 0, 22),
+				(n == selectedSlot) and Color3.fromRGB(80, 90, 150) or Color3.fromRGB(45, 45, 58))
+			b.TextXAlignment = Enum.TextXAlignment.Left
+			b.Font = Enum.Font.Gotham
+			b.MouseButton1Click:Connect(function()
+				selectedSlot = n
+				S.playSlot = n
+				saveSettings()
+				nameBox.Text = n
+				refreshSlotList()
+				if refreshToggles then refreshToggles() end
+			end)
+		end
+	end
+
+	local function slotName()
+		local n = nameBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+		if n == "" then n = selectedSlot or "" end
+		return n ~= "" and n or nil
+	end
+
+	saveBtn.MouseButton1Click:Connect(function()
+		if mode == "record" then log("Stop record dulu sebelum Save.") return end
+		local n = slotName()
+		if not n then log("Isi nama makro dulu.") return end
+		if #macro == 0 then log("Makro kosong, tidak ada yang disimpan.") return end
+		slots[n] = deepcopy(macro)
+		selectedSlot = n
+		S.playSlot = n
+		saveSlots()
+		saveSettings()
+		refreshSlotList()
+		if refreshToggles then refreshToggles() end
+		log(("SAVE '%s' (%d aksi) tersimpan permanen."):format(n, #macro))
+	end)
+
+	loadBtn.MouseButton1Click:Connect(function()
+		if mode ~= "idle" then log("Stop record/play dulu sebelum Load.") return end
+		local n = slotName()
+		if not n or not slots[n] then log("Pilih makro yang tersimpan dulu.") return end
+		macro = deepcopy(slots[n])
+		selectedSlot = n
+		S.playSlot = n
+		saveCurrent()
+		saveSettings()
+		refreshCount()
+		refreshSlotList()
+		if refreshToggles then refreshToggles() end
+		log(("LOAD '%s' (%d aksi) siap di-Play."):format(n, #macro))
+	end)
+
+	delBtn.MouseButton1Click:Connect(function()
+		local n = slotName()
+		if not n or not slots[n] then log("Pilih makro yang mau dihapus.") return end
+		slots[n] = nil
+		if selectedSlot == n then selectedSlot = nil end
+		if S.playSlot == n then S.playSlot = nil saveSettings() end
+		nameBox.Text = ""
+		saveSlots()
+		refreshSlotList()
+		if refreshToggles then refreshToggles() end
+		log(("HAPUS '%s'."):format(n))
+	end)
+
+	-- tombol speed manual
+	local SPD_CYCLE = { 0, 1, 1.5, 2 }
+	local function refreshSpd()
+		local m = S.spdMode or 0
+		spdBtn.Text = (m > 0) and ("Spd: x" .. tostring(m)) or "Spd: Auto"
+		spdBtn.BackgroundColor3 = (m > 0) and Color3.fromRGB(150, 110, 40) or Color3.fromRGB(80, 70, 110)
+	end
+	spdBtn.MouseButton1Click:Connect(function()
+		local idx = 1
+		for i, v in ipairs(SPD_CYCLE) do
+			if v == (S.spdMode or 0) then idx = i end
+		end
+		S.spdMode = SPD_CYCLE[idx % #SPD_CYCLE + 1]
+		saveSettings(); refreshSpd()
+		log("Speed makro: " .. ((S.spdMode > 0) and ("manual x" .. tostring(S.spdMode)) or "otomatis (baca dari layar)"))
+	end)
+
+	-- Auto page (scrollable)
+	local pa = Instance.new("ScrollingFrame")
+	pa.BackgroundTransparency = 1
+	pa.BorderSizePixel = 0
+	pa.Size = UDim2.new(1, 0, 1, 0)
+	pa.ScrollBarThickness = 3
+	pa.CanvasSize = UDim2.new()
+	pa.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	pa.Parent = pages.Auto
+	local paLayout = Instance.new("UIListLayout", pa)
+	paLayout.Padding = UDim.new(0, 4)
+	paLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+	local lo = 0
+	local function nextLO() lo += 1 return lo end
+
+	local function styleToggle(b, label, on)
+		b.Text = label .. ": " .. (on and "ON" or "OFF")
+		b.BackgroundColor3 = on and Color3.fromRGB(50, 150, 70) or Color3.fromRGB(70, 70, 80)
+	end
+	local function mkToggle()
+		local b = mkBtn(pa, "", UDim2.new(), UDim2.new(1, -8, 0, 28), Color3.new())
+		b.LayoutOrder = nextLO()
+		return b
+	end
+
+	local tPlay = mkToggle()
+	playSlotLabel = mkLabel(pa, "", UDim2.new(), UDim2.new(1, -8, 0, 16), nil, Color3.fromRGB(170, 190, 255))
+	playSlotLabel.Font = Enum.Font.Gotham
+	playSlotLabel.TextSize = 11
+	playSlotLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	playSlotLabel.LayoutOrder = nextLO()
+
+	local tVote = mkToggle()
+
+	local diffRow = Instance.new("Frame")
+	diffRow.BackgroundTransparency = 1
+	diffRow.Size = UDim2.new(1, -8, 0, 26)
+	diffRow.LayoutOrder = nextLO()
+	diffRow.Parent = pa
+	local diffBtns = {}
+	for i, name in ipairs(DIFFS) do
+		local b = mkBtn(diffRow, name, UDim2.new((i - 1) / 4, i == 1 and 0 or 2, 0, 0), UDim2.new(0.25, -2, 1, 0), Color3.fromRGB(55, 55, 70))
+		b.TextSize = 10
+		diffBtns[name] = b
+		b.MouseButton1Click:Connect(function()
+			S.difficulty = name
+			X.resetVote()
+			saveSettings()
+			refreshToggles()
+			log("Difficulty vote: " .. name)
+		end)
+	end
+
+	local tReplay = mkToggle()
+	local t15 = mkToggle()
+	local t2 = mkToggle()
+	local tStart = mkToggle()
+	local tPick = mkToggle()
+	X.pickLabel = mkLabel(pa, "Pickup: ok 0 | gagal 0 | menunggu 0", UDim2.new(), UDim2.new(1, -8, 0, 18), nil, Color3.fromRGB(170, 190, 255))
+	X.pickLabel.Font = Enum.Font.Gotham
+	X.pickLabel.TextSize = 11
+	X.pickLabel.LayoutOrder = nextLO()
+
+	local diagBtn = mkBtn(pa, "Diagnosa Wave / Speed (hasil di Log)", UDim2.new(), UDim2.new(1, -8, 0, 26), Color3.fromRGB(60, 90, 110))
+	diagBtn.TextSize = 11
+	diagBtn.LayoutOrder = nextLO()
+	diagBtn.MouseButton1Click:Connect(function()
+		showTab("Log")
+		task.spawn(function() pcall(diag) end)
+	end)
+
+	local hint = mkLabel(pa, "Makro mengikuti wave & waktu game (otomatis menyesuaikan speed). Teleport tower: saat Record, klik ability, pilih tujuan, klik Place. Kalau speed salah terbaca, atur manual lewat tombol Spd di tab Makro.",
+		UDim2.new(), UDim2.new(1, -8, 0, 84), nil, Color3.fromRGB(150, 150, 165))
+	hint.Font = Enum.Font.Gotham
+	hint.TextSize = 10
+	hint.TextWrapped = true
+	hint.TextYAlignment = Enum.TextYAlignment.Top
+	hint.LayoutOrder = nextLO()
+
+	refreshToggles = function()
+		styleToggle(tPlay, "Auto Play (rejoin)", S.autoPlay)
+		playSlotLabel.Text = "Makro dipilih: " .. ((S.playSlot and slots[S.playSlot]) and S.playSlot or "- (tap nama di tab Makro)")
+		styleToggle(tVote, "Auto Vote", S.autoVote)
+		for name, b in pairs(diffBtns) do
+			b.BackgroundColor3 = (S.difficulty == name) and Color3.fromRGB(80, 90, 150) or Color3.fromRGB(55, 55, 70)
+		end
+		styleToggle(tReplay, "Auto Replay", S.autoReplay)
+		styleToggle(t15, "Auto Speed x1.5", S.speed == 1.5)
+		styleToggle(t2, "Auto Speed x2", S.speed == 2)
+		styleToggle(tStart, "Auto Start Match", S.autoStart)
+		styleToggle(tPick, "Auto Pickup (jalan)", S.autoPickup)
+	end
+
+	tPlay.MouseButton1Click:Connect(function()
+		S.autoPlay = not S.autoPlay
+		saveSettings(); refreshToggles()
+		log("Auto Play (rejoin): " .. (S.autoPlay and "ON" or "OFF"))
+	end)
+	tVote.MouseButton1Click:Connect(function()
+		S.autoVote = not S.autoVote
+		X.resetVote()
+		saveSettings(); refreshToggles()
+		log("Auto Vote: " .. (S.autoVote and ("ON (" .. S.difficulty .. ")") or "OFF"))
+	end)
+	tReplay.MouseButton1Click:Connect(function()
+		S.autoReplay = not S.autoReplay
+		X.resetReplay()
+		saveSettings(); refreshToggles()
+		log("Auto Replay: " .. (S.autoReplay and "ON" or "OFF"))
+	end)
+	t15.MouseButton1Click:Connect(function()
+		S.speed = (S.speed == 1.5) and 0 or 1.5
+		X.resetSpeed()
+		saveSettings(); refreshToggles()
+		log("Auto Speed: " .. (S.speed == 0 and "OFF" or ("x" .. S.speed)))
+	end)
+	t2.MouseButton1Click:Connect(function()
+		S.speed = (S.speed == 2) and 0 or 2
+		X.resetSpeed()
+		saveSettings(); refreshToggles()
+		log("Auto Speed: " .. (S.speed == 0 and "OFF" or ("x" .. S.speed)))
+	end)
+	tStart.MouseButton1Click:Connect(function()
+		S.autoStart = not S.autoStart
+		X.resetStart()
+		saveSettings(); refreshToggles()
+		log("Auto Start: " .. (S.autoStart and ("ON (jeda " .. CFG.START_DELAY .. " detik)") or "OFF"))
+	end)
+	tPick.MouseButton1Click:Connect(function()
+		S.autoPickup = not S.autoPickup
+		saveSettings(); refreshToggles()
+		log("Auto Pickup: " .. (S.autoPickup and "ON (karakter akan jalan ke item)" or "OFF"))
+	end)
+
+	-- Log page
+	logScroll = Instance.new("ScrollingFrame")
+	logScroll.Size = UDim2.new(1, 0, 1, 0)
+	logScroll.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
+	logScroll.BorderSizePixel = 0
+	logScroll.ScrollBarThickness = 4
+	logScroll.CanvasSize = UDim2.new()
+	logScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	logScroll.Parent = pages.Log
+	Instance.new("UIListLayout", logScroll).SortOrder = Enum.SortOrder.LayoutOrder
+
+	refreshUI = function()
+		recBtn.Text = (mode == "record") and "Stop Rec" or "Record"
+		playBtn.Text = (mode == "play") and "Stop" or "Play"
+	end
+
+	recBtn.MouseButton1Click:Connect(function()
+		if mode == "play" then return end
+		if mode == "record" then
+			-- selesaikan teleport yang masih menunggu tujuan supaya tidak hilang
+			if watch then
+				local w = watch
+				local ok, err = pcall(finalizeWatch, w)
+				if not ok then
+					log("ERROR teleport: " .. tostring(err))
+					if pending[w.seq] == nil then pending[w.seq] = false end
+					pcall(flush)
+				end
+			end
+			G.TMacro_Watching = false
+			mode = "idle"
+			saveCurrent()
+			log(("Record berhenti. Total %d aksi. Tekan Save untuk simpan permanen."):format(#macro))
+		else
+			macro = {}
+			seqCounter, nextFlush, pending = 0, 1, {}
+			knownIds, nameById, liveById, claimed, queue = {}, {}, {}, {}, {}
+			posNow, instById = {}, {}
+			watch = nil
+			G.TMacro_Watching = false
+			refreshCount()
+			recStartGT = gt
+			if curWave == 0 then waveStartGT = gt end
+			mode = "record"
+			log(("Record mulai. W%d +%.1fs | speed x%s | cash=%s"):format(
+				curWave, math.max(0, gt - waveStartGT), tostring(curSpeed), fmt(getCash())))
+			if curWave > 0 and waveApprox then
+				log("PERINGATAN: Record dimulai di tengah wave, awal wave hanya perkiraan. Untuk akurat, Record sebelum wave 1.")
+			end
+			if not waveSeen then
+				log("PERINGATAN: label WAVE belum terbaca. Tekan Diagnosa di tab Auto.")
+			end
+			if not speedSeen then
+				log("PERINGATAN: speed belum terbaca. Atur manual lewat tombol Spd di tab Makro.")
+			end
+		end
+		refreshUI()
+	end)
+
+	playBtn.MouseButton1Click:Connect(function()
+		if mode == "play" then
+			mode = "idle"
+			log("Play dihentikan.")
+		elseif mode == "idle" then
+			mode = "play"
+			refreshUI()
+			task.spawn(playMacro)
+		end
+		refreshUI()
+	end)
+
+	-- minimize
+	local minimized = false
+	local function setMinimized(v)
+		minimized = v
+		body.Visible = not v
+		frame.Size = v and UDim2.fromOffset(130, 30) or FULL
+		title.Size = v and UDim2.new(1, -32, 0, 30) or UDim2.new(1, -36, 0, 30)
+		minBtn.Text = v and "+" or "-"
+	end
+	minBtn.MouseButton1Click:Connect(function() setMinimized(not minimized) end)
+	setMinimized(true) -- otomatis minimize saat pertama kali di-execute
+
+	local dragging, dragStart, startPos
+	title.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging, dragStart, startPos = true, i.Position, frame.Position
+		end
+	end)
+	UIS.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseMovement) then
+			local d = i.Position - dragStart
+			frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+		end
+	end)
+	UIS.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end)
+
+	task.spawn(function()
+		while alive do
+			cashLabel.Text = "Cash: " .. fmt(getCash())
+			infoLabel.Text = ("W%d  +%.0fs  x%s%s%s"):format(
+				curWave, math.max(0, gt - waveStartGT), tostring(curSpeed),
+				speedSeen and "" or "?", waveSeen and "" or " (wave?)")
+			task.wait(0.5)
+		end
+	end)
+
+	G.TMacro_Destroy = function()
+		alive = false
+		mode = "idle"
+		G.TMacro_Watching = false
+		G.TMacro_Handler2 = nil
+		G.TMacro_Handler3 = nil
+		G.TMacro_Handler4 = nil
+		if hbConn then pcall(function() hbConn:Disconnect() end) end
+		if X.wsConn then pcall(function() X.wsConn:Disconnect() end) end
+		for _, c in ipairs(X.itemConns) do pcall(function() c:Disconnect() end) end
+		for _, c in ipairs(X.resultConns) do pcall(function() c:Disconnect() end) end
+		pcall(function() gui:Destroy() end)
+	end
+
+	---------------------------------------------------------------- START
+	local sv = readJson(CFG.SET_FILE)
+	if sv then
+		S.speed = tonumber(sv.speed) or 0
+		S.autoStart = sv.autoStart == true
+		S.autoPickup = sv.autoPickup == true
+		S.autoPlay = sv.autoPlay == true
+		S.playSlot = type(sv.playSlot) == "string" and sv.playSlot or nil
+		S.autoVote = sv.autoVote == true
+		S.autoReplay = sv.autoReplay == true
+		S.spdMode = tonumber(sv.spdMode) or 0
+		for _, d in ipairs(DIFFS) do
+			if sv.difficulty == d then S.difficulty = d end
+		end
+	end
+	macro = readJson(CFG.CUR_FILE) or {}
+	for i, a in ipairs(macro) do
+		if a.type == "place" and not a.id then a.id = "p" .. i end
+	end
+	slots = readJson(CFG.SLOT_FILE) or {}
+	if S.playSlot and slots[S.playSlot] then
+		selectedSlot = S.playSlot
+		nameBox.Text = S.playSlot
+	end
+
+	showTab("Makro")
+	refreshCount()
+	refreshSlotList()
+	refreshToggles()
+	refreshUI()
+	refreshSpd()
+
+	local hooked = installHook()
+	log("Hook: " .. (hooked and "aktif" or "GAGAL"))
+	local slotCount = 0
+	for _ in pairs(slots) do slotCount += 1 end
+	log(("Makro aktif: %d aksi | Slot tersimpan: %d"):format(#macro, slotCount))
+
+	-- pantau item baru di workspace + event ItemDrop (Drop / Taken)
+	X.wsConn = workspace.DescendantAdded:Connect(X.onWsAdded)
+	task.spawn(function()
+		local r = RS:WaitForChild("Remotes", 30)
+		if not r or not alive then return end
+		for _, d in ipairs(r:GetDescendants()) do X.connectItem(d) end
+		table.insert(X.itemConns, r.DescendantAdded:Connect(function(d) X.connectItem(d) end))
+	end)
+
+	-- pantau event hasil match (untuk Auto Replay)
+	task.spawn(function()
+		local r = RS:WaitForChild("Remotes", 30)
+		local e = r and r:WaitForChild("Events", 30)
+		if e and alive then X.hookResult(e) end
+	end)
+
+	if S.autoPlay then startAutoPlay() end
 end
-macro = readJson(CFG.CUR_FILE) or {}
-for i, a in ipairs(macro) do
-	if a.type == "place" and not a.id then a.id = "p" .. i end
-end
-slots = readJson(CFG.SLOT_FILE) or {}
-if S.playSlot and slots[S.playSlot] then
-	selectedSlot = S.playSlot
-	nameBox.Text = S.playSlot
-end
-
-showTab("Makro")
-refreshCount()
-refreshSlotList()
-refreshToggles()
-refreshUI()
-refreshSpd()
-
-local hooked = installHook()
-log("Hook: " .. (hooked and "aktif" or "GAGAL"))
-log(("Makro aktif: %d aksi | Slot tersimpan: %d"):format(#macro, (function() local c = 0 for _ in pairs(slots) do c += 1 end return c end)()))
-
--- pantau item baru di workspace + event ItemDrop (Drop / Taken)
-wsConn = workspace.DescendantAdded:Connect(onWsAdded)
-task.spawn(function()
-	local r = RS:WaitForChild("Remotes", 30)
-	if not r or not alive then return end
-	for _, d in ipairs(r:GetDescendants()) do connectItem(d) end
-	table.insert(itemConns, r.DescendantAdded:Connect(function(d) connectItem(d) end))
-end)
-
--- pantau event hasil match (untuk Auto Replay)
-task.spawn(function()
-	local r = RS:WaitForChild("Remotes", 30)
-	local e = r and r:WaitForChild("Events", 30)
-	if e and alive then hookResultEvents(e) end
-end)
-
-if S.autoPlay then startAutoPlay() end
